@@ -1,11 +1,13 @@
 # Python
 .venv/
+venv/
 __pycache__/
 *.pyc
 
 # Node
 node_modules/
-dist/
+frontend/node_modules/
+frontend/dist/
 
 # Environment
 .env
@@ -15,11 +17,15 @@ dist/
 runtime/
 releases/
 
-# Upload
-uploads/
+# Upload / Data
 shared/
+uploads/
 logs/
 *.log
+
+# Temp
+tree.txt
+git-files.txt
 
 # IDE
 .vscode/

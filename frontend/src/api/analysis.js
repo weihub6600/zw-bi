@@ -1,0 +1,8 @@
+import { apiRequest, currentDepartmentCode } from './http'
+function common({departmentCode='',shops=[],warehouses=[],productSearch='',includeName='',excludeName='',productCodes=[]}={}){return {department_code:currentDepartmentCode(departmentCode),shops,warehouses,product_search:productSearch,include_name:includeName,exclude_name:excludeName,product_codes:productCodes}}
+export const fetchInventoryAnalysis=(options={})=>apiRequest('/api/analysis/inventory',{params:{...common(options),days:options.days||30,category:options.category||undefined}})
+export function fetchExpiryBatches(options={}){const params=common(options);delete params.shops;return apiRequest('/api/analysis/expiry',{params:{...params,statuses:options.statuses||[],remaining_days_min:options.remainingDaysMin,remaining_days_max:options.remainingDaysMax,remaining_pct_min:options.remainingPctMin,remaining_pct_max:options.remainingPctMax,limit:options.limit||1000}})}
+export const fetchProductDetail=(sku,options={})=>apiRequest(`/api/analysis/products/${encodeURIComponent(sku)}`,{params:{department_code:currentDepartmentCode(options.departmentCode),days:options.days||30,start_date:options.startDate||undefined,end_date:options.endDate||undefined,shops:options.shops||[],warehouses:options.warehouses||[]}})
+export const saveProductNote=(sku,note,{departmentCode=''}={})=>apiRequest(`/api/analysis/products/${encodeURIComponent(sku)}/note`,{method:'PUT',params:{department_code:currentDepartmentCode(departmentCode)},body:{note}})
+
+export const searchProducts=(q,{departmentCode='',limit=20}={})=>apiRequest('/api/analysis/products/search',{params:{q,department_code:currentDepartmentCode(departmentCode),limit}})
