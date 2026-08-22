@@ -95,8 +95,9 @@ def user_detail(db: Session, actor: dict, department_code: str, user_id: str) ->
 
 def create_user(db: Session, actor: dict, department_code: str, *, user_id: str, username: str, password: str, role: str = "member") -> dict:
     department=assert_can_admin_department(db,actor,department_code)
-    role = role if actor["is_system_admin"] else "member"
     if role not in {"member","dept_admin"}: raise ValueError("角色无效")
+    if not actor["is_system_admin"] and role == "dept_admin":
+        raise PermissionDenied("部门管理员不能创建部门管理员；仅系统管理员可授予 dept_admin 角色")
     try:
         result=db.execute(text("""
           INSERT INTO users(user_id,username,password_hash,status) VALUES(:uid,:username,:password_hash,'enabled')
