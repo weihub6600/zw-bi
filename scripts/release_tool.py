@@ -98,12 +98,22 @@ def migrate():
     try:
         bootstrap_migration_table(conn)
         with conn.cursor() as cur:
-            cur.execute("SELECT migration_id FROM schema_migrations")
-            done={r[0] for r in cur.fetchall()}
+            cur.execute("SELECT migration_id, checksum FROM schema_migrations")
+            done={r[0]: r[1] for r in cur.fetchall()}
         applied=[]
         for path in files:
             mid=path.stem
             if mid in done:
+                # checksum drift 检查：已执行 migration 的 checksum 与当前文件不一致，
+                # 说明 migration 文件已被修改，必须报错（历史 baseline checksum 全 0 兼容跳过）。
+                recorded = done[mid]
+                if recorded and recorded != '0'*64:
+                    current = sha256(path)
+                    if current != recorded:
+                        raise SystemExit(
+                            f"migration 文件被修改：{mid}（记录 checksum={recorded[:12]}…，"
+                            f"当前文件 checksum={current[:12]}…）。请勿修改已应用的 migration。"
+                        )
                 continue
             sql=path.read_text(encoding='utf-8')
             # 每个 migration 文件独立事务：成功则连同版本记录一并提交，

@@ -258,7 +258,7 @@ def _aging_rows(db: Session, department_id: int) -> list[list[Any]]:
     return out
 
 
-def _build_xlsx(data_type: str, rows: list[list[Any]], department_code: str, *, write_only: bool = False) -> tuple[bytes, str, int]:
+def _build_xlsx(data_type: str, rows: list[list[Any]], department_code: str, *, write_only: bool = False) -> tuple[bytes, str, int, str]:
     if data_type == "product":
         headers, date_cols = PRODUCT_HEADERS, set()
     elif data_type == "sales":

@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import bindparam, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth_service import record_activity
@@ -105,18 +106,34 @@ def _dimension_ids_in_department(db: Session, department_id: int, kind: str, ids
         return set()
     if kind == "shops":
         join_col, fk_col, fk_table = "shops", "shop_id", "shops"
+        # 店铺只出现在销量数据中
+        src = "sales_daily"
+        sql = text(
+            f"""
+            SELECT DISTINCT sd.{fk_col}
+            FROM {src} sd
+            JOIN {fk_table} {join_col} ON {join_col}.id=sd.{fk_col}
+            WHERE sd.department_id=:department_id AND sd.{fk_col} IN :ids
+            """
+        ).bindparams(bindparam("ids", expanding=True))
     elif kind == "warehouses":
-        join_col, fk_col, fk_table = "warehouses", "warehouse_id", "warehouses"
+        # 仓库综合销量/库存/库龄三张表
+        sql = text(
+            """
+            SELECT DISTINCT w.id
+            FROM warehouses w
+            WHERE w.id IN (
+                SELECT warehouse_id FROM sales_daily WHERE department_id=:department_id
+                UNION
+                SELECT warehouse_id FROM inventory_batch WHERE department_id=:department_id
+                UNION
+                SELECT warehouse_id FROM aging_snapshot WHERE department_id=:department_id
+            )
+              AND w.id IN :ids
+            """
+        ).bindparams(bindparam("ids", expanding=True))
     else:
         raise ValueError("非法维度")
-    sql = text(
-        f"""
-        SELECT DISTINCT sd.{fk_col}
-        FROM sales_daily sd
-        JOIN {fk_table} {join_col} ON {join_col}.id=sd.{fk_col}
-        WHERE sd.department_id=:department_id AND sd.{fk_col} IN :ids
-        """
-    ).bindparams(bindparam("ids", expanding=True))
     rows = db.execute(sql, {"department_id": department_id, "ids": tuple(int(i) for i in ids)}).scalars().all()
     return set(int(i) for i in rows)
 
@@ -160,13 +177,25 @@ def _write_task_dimensions(db: Session, task_id: int, shop_ids: list[int], wareh
         )
 
 
-def _next_task_no(db: Session, assign_date: date) -> str:
+def _next_task_no(db: Session, assign_date: date, *, offset: int = 0) -> str:
     prefix = f"TD{assign_date.strftime('%Y%m%d')}"
     count = db.execute(
         text("SELECT COUNT(*) FROM todo_tasks WHERE task_no LIKE :prefix"),
         {"prefix": prefix + "%"},
     ).scalar_one()
-    return f"{prefix}-{int(count)+1:03d}"
+    return f"{prefix}-{int(count)+1+offset:03d}"
+
+
+def _is_duplicate_key(exc: Exception) -> bool:
+    """判断是否为唯一键冲突（task_no UNIQUE 撞号）。"""
+    if isinstance(exc, IntegrityError):
+        msg = str(exc.orig) if getattr(exc, "orig", None) else str(exc)
+        return "Duplicate entry" in msg or "UNIQUE" in msg or "duplicate key" in msg.lower()
+    code = getattr(getattr(exc, "orig", None), "args", [None])
+    try:
+        return int(code[0]) == 1062
+    except (TypeError, ValueError, IndexError):
+        return False
 
 
 def _assert_can_assign(
@@ -210,8 +239,14 @@ def list_task_dimensions(db: Session, actor_user_id: str, department_code: str) 
         text(
             """
             SELECT DISTINCT w.id, w.source_name
-            FROM sales_daily sd JOIN warehouses w ON w.id=sd.warehouse_id
-            WHERE sd.department_id=:department_id
+            FROM warehouses w
+            WHERE w.id IN (
+                SELECT warehouse_id FROM sales_daily WHERE department_id=:department_id
+                UNION
+                SELECT warehouse_id FROM inventory_batch WHERE department_id=:department_id
+                UNION
+                SELECT warehouse_id FROM aging_snapshot WHERE department_id=:department_id
+            )
             ORDER BY w.source_name
             """
         ),
@@ -285,33 +320,45 @@ def create_task(
     shop_id = valid_shops[0] if valid_shops else None
     warehouse_id = valid_whs[0] if valid_whs else None
     start = task_start_date(assign_date)
-    task_no = _next_task_no(db, assign_date)
-    db.execute(
-        text(
-            """
-            INSERT INTO todo_tasks(
-              task_no,department_id,product_id,owner_user_pk,creator_user_pk,
-              warehouse_id,shop_id,target_qty,assign_date,start_date,manager_note,status
-            ) VALUES(
-              :task_no,:department_id,:product_id,:owner_user_pk,:creator_user_pk,
-              :warehouse_id,:shop_id,:target_qty,:assign_date,:start_date,:manager_note,'running'
+    # task_no 并发安全：COUNT(*)+1 在并发下可能撞 UNIQUE，撞号时自动重排并有限重试。
+    max_retries = 5
+    task_no = None
+    for attempt in range(max_retries):
+        candidate = _next_task_no(db, assign_date, offset=attempt)
+        try:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO todo_tasks(
+                      task_no,department_id,product_id,owner_user_pk,creator_user_pk,
+                      warehouse_id,shop_id,target_qty,assign_date,start_date,manager_note,status
+                    ) VALUES(
+                      :task_no,:department_id,:product_id,:owner_user_pk,:creator_user_pk,
+                      :warehouse_id,:shop_id,:target_qty,:assign_date,:start_date,:manager_note,'running'
+                    )
+                    """
+                ),
+                {
+                    "task_no": candidate,
+                    "department_id": department_id,
+                    "product_id": product["id"],
+                    "owner_user_pk": owner["id"],
+                    "creator_user_pk": actor["id"],
+                    "warehouse_id": warehouse_id,
+                    "shop_id": shop_id,
+                    "target_qty": target_qty,
+                    "assign_date": assign_date,
+                    "start_date": start,
+                    "manager_note": manager_note.strip() or None,
+                },
             )
-            """
-        ),
-        {
-            "task_no": task_no,
-            "department_id": department_id,
-            "product_id": product["id"],
-            "owner_user_pk": owner["id"],
-            "creator_user_pk": actor["id"],
-            "warehouse_id": warehouse_id,
-            "shop_id": shop_id,
-            "target_qty": target_qty,
-            "assign_date": assign_date,
-            "start_date": start,
-            "manager_note": manager_note.strip() or None,
-        },
-    )
+            task_no = candidate
+            break
+        except IntegrityError as exc:
+            if _is_duplicate_key(exc) and attempt < max_retries - 1:
+                db.rollback()
+                continue
+            raise
     db.execute(
         text(
             """

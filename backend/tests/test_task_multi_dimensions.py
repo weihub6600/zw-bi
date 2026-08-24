@@ -31,6 +31,8 @@ def _engine():
         conn.execute(text("CREATE TABLE shops(id INTEGER PRIMARY KEY,source_code TEXT,source_name TEXT)"))
         conn.execute(text("CREATE TABLE warehouses(id INTEGER PRIMARY KEY,source_code TEXT,source_name TEXT)"))
         conn.execute(text("CREATE TABLE sales_daily(id INTEGER PRIMARY KEY,department_id INTEGER,business_date DATE,shop_id INTEGER,warehouse_id INTEGER,product_id INTEGER,sales_qty DECIMAL,avg_price DECIMAL,import_batch_id INTEGER)"))
+        conn.execute(text("CREATE TABLE inventory_batch(id INTEGER PRIMARY KEY,department_id INTEGER,snapshot_date DATE,warehouse_id INTEGER,product_id INTEGER,stock_qty DECIMAL,production_date DATE,expire_date DATE,import_batch_id INTEGER)"))
+        conn.execute(text("CREATE TABLE aging_snapshot(id INTEGER PRIMARY KEY,department_id INTEGER,snapshot_date DATE,warehouse_id INTEGER,product_id INTEGER,stock_qty DECIMAL,aging_days INTEGER,import_batch_id INTEGER)"))
         conn.execute(text("CREATE TABLE activity_logs(id INTEGER PRIMARY KEY,user_pk INTEGER,department_id INTEGER,action_type TEXT,action_detail TEXT,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"))
         conn.execute(text("INSERT INTO departments(id,code,name,status) VALUES(1,'B2C','B2C','enabled')"))
         conn.execute(text("INSERT INTO departments(id,code,name,status) VALUES(2,'XJB','XJB','enabled')"))

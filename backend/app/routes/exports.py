@@ -36,6 +36,10 @@ def _xlsx_response(content: bytes, filename: str, row_count: int | None = None, 
 
     from fastapi.responses import Response
 
+    # 空结果：不下发空 Excel，直接返回明确业务错误。
+    if row_count is not None and row_count == 0:
+        raise ExportError("当前筛选条件下暂无可导出数据")
+
     # RFC 6266/5987：ASCII 文件名兜底 + filename* 携带 UTF-8 中文真实名，
     # 避免中文文件名触发 latin-1 编码失败（UnicodeEncodeError → HTTP 500）。
     safe_name = ascii_filename or "export.xlsx"
