@@ -185,5 +185,61 @@ class MigrationSha256Tests(unittest.TestCase):
             self.assertIn(recorded, accepted)
 
 
+class BootstrapMigrationTableTests(unittest.TestCase):
+    """bootstrap_migration_table 的 legacy baseline 只应标记 0141~0147，不含 0151 及之后。"""
+
+    def _import_mod(self):
+        import importlib.util
+        import sys
+        scripts_dir = pathlib.Path(__file__).resolve().parents[2] / "scripts"
+        spec = importlib.util.spec_from_file_location("release_tool_mod2", scripts_dir / "release_tool.py")
+        mod = importlib.util.module_from_spec(spec)
+        backend_dir = str(pathlib.Path(__file__).resolve().parents[1])
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_legacy_baseline_only_0141_to_0147(self):
+        from unittest import mock
+        mod = self._import_mod()
+
+        executed = []
+
+        class FakeCursor:
+            def __init__(self):
+                self._calls = []
+            def execute(self, sql, args=None):
+                self._calls.append((sql, args))
+            def fetchone(self):
+                sql = self._calls[-1][0] if self._calls else ""
+                if "COUNT(*)" in sql:
+                    return (0,)  # schema_migrations 空
+                if "SHOW TABLES" in sql:
+                    return ("users",)  # 旧库有 users 表
+                return None
+            def executemany(self, sql, seq):
+                executed.extend(row[0] for row in seq)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        conn = mock.MagicMock()
+        conn.cursor.return_value = FakeCursor()
+        mod.bootstrap_migration_table(conn)
+
+        # 只 baseline 0141~0147
+        self.assertEqual(sorted(executed), sorted([
+            "0141_import_pipeline", "0142_dashboard_indexes", "0145_import_center_indexes",
+            "0146_auth_sessions", "0147_audit_indexes",
+        ]))
+        # 0151~0155 不在 baseline
+        for mid in ["0151_release_chain", "0152_product_alias_latest_snapshot",
+                    "0153_task_multi_dimensions", "0154_task_no_sequences",
+                    "0155_task_no_sequence_backfill"]:
+            self.assertNotIn(mid, executed)
+
+
 if __name__ == "__main__":
     unittest.main()

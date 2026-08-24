@@ -97,19 +97,16 @@ def bootstrap_migration_table(conn):
         if count == 0:
             cur.execute("SHOW TABLES LIKE 'users'")
             if cur.fetchone():
-                # Existing database (V15.0 老库 或 fresh init-schema 后)：schema 已包含这些历史 migration 的表，
-                # 标记为 baseline，避免重复应用。schema_tables.sql 已含 0152/0153/0154 的表定义。
+                # 旧版数据库（有 users 等历史基础表，但没有 schema_migrations）。
+                # 只 baseline 确定属于历史基础库的 0141~0147；0151 及之后的 migration
+                # 必须由 migrate() 正常执行，否则升级会缺失 release_history /
+                # product_name_aliases / task_shops / task_warehouses / task_no_sequences 等表。
                 baseline=[
                     ('0141_import_pipeline','14.1.0'),
                     ('0142_dashboard_indexes','14.2.0'),
                     ('0145_import_center_indexes','14.5.0'),
                     ('0146_auth_sessions','14.6.0'),
                     ('0147_audit_indexes','14.7.0'),
-                    ('0151_release_chain','15.4.1'),
-                    ('0152_product_alias_latest_snapshot','15.4.1'),
-                    ('0153_task_multi_dimensions','15.4.1'),
-                    ('0154_task_no_sequences','15.4.1'),
-                    ('0155_task_no_sequence_backfill','15.4.1'),
                 ]
                 cur.executemany(
                     "INSERT IGNORE INTO schema_migrations(migration_id,app_version,checksum,applied_by) VALUES(%s,%s,%s,'baseline')",
