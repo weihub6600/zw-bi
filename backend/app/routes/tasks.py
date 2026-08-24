@@ -13,6 +13,7 @@ from ..services.task_crud_service import (
     create_task,
     decide_delete,
     list_assignees,
+    list_task_dimensions,
     list_tasks,
     request_delete,
     update_owner_note,
@@ -42,6 +43,8 @@ class CreateTaskBody(BaseModel):
     manager_note: str = Field(default="", max_length=20000)
     shop_name: str | None = Field(default=None, max_length=255)
     warehouse_name: str | None = Field(default=None, max_length=255)
+    shop_ids: list[int] | None = Field(default=None)
+    warehouse_ids: list[int] | None = Field(default=None)
 
 
 class OwnerNoteBody(BaseModel):
@@ -79,6 +82,14 @@ def tasks(
 def assignees(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try:
         return list_assignees(db, actor["user_id"], department_code)
+    except Exception as exc:
+        _handle(exc)
+
+
+@router.get("/options")
+def task_options(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
+    try:
+        return list_task_dimensions(db, actor["user_id"], department_code)
     except Exception as exc:
         _handle(exc)
 

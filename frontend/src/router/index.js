@@ -30,7 +30,7 @@ router.beforeEach(async to=>{
   const auth=useAuthStore();await auth.bootstrap()
   if(to.meta.public){if(auth.authenticated&&to.path==='/login')return '/';return true}
   if(!auth.authenticated)return {path:'/login',query:{redirect:to.fullPath}}
-  if(to.path==='/data-center'&&!auth.capabilities.can_import)return '/'
+  if(to.path==='/data-center'&&!auth.capabilities.can_import&&!auth.capabilities.can_download_data)return '/'
   if(to.path==='/settings'&&!auth.capabilities.can_manage_users&&!auth.capabilities.can_manage_expiry_rules)return '/'
   return true
 })

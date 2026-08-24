@@ -12,6 +12,7 @@ from .routes.tasks import router as tasks_router
 from .routes.auth import router as auth_router
 from .routes.admin import router as admin_router
 from .routes.setup import router as setup_router
+from .routes.exports import router as exports_router
 
 app = FastAPI(title="百嘉瑞 BI", version=APP_VERSION)
 
@@ -33,6 +34,7 @@ app.include_router(tasks_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(setup_router, prefix="/api")
+app.include_router(exports_router, prefix="/api")
 
 @app.get('/api')
 def root():

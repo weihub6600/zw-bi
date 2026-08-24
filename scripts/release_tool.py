@@ -94,7 +94,8 @@ def apply_sql(conn, sql: str):
 def migrate():
     mig_dir = ROOT / 'backend' / 'sql' / 'migrations'
     files = sorted(mig_dir.glob('*.sql'))
-    with connect() as conn:
+    conn = connect()
+    try:
         bootstrap_migration_table(conn)
         with conn.cursor() as cur:
             cur.execute("SELECT migration_id FROM schema_migrations")
@@ -105,29 +106,47 @@ def migrate():
             if mid in done:
                 continue
             sql=path.read_text(encoding='utf-8')
-            apply_sql(conn, sql)
-            checksum=sha256(path)
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO schema_migrations(migration_id,app_version,checksum,applied_by) VALUES(%s,%s,%s,'release_tool')",
-                    (mid, APP_VERSION, checksum),
-                )
-            applied.append(mid)
+            # 每个 migration 文件独立事务：成功则连同版本记录一并提交，
+            # 失败则整体回滚，确保不留半状态、可安全重跑（幂等）。
+            conn.autocommit(False)
+            try:
+                apply_sql(conn, sql)
+                checksum=sha256(path)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO schema_migrations(migration_id,app_version,checksum,applied_by) VALUES(%s,%s,%s,'release_tool')",
+                        (mid, APP_VERSION, checksum),
+                    )
+                conn.commit()
+                applied.append(mid)
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit(True)
         return applied
+    finally:
+        conn.close()
 
 
 def init_schema():
     schema=ROOT/'backend/sql/schema_tables.sql'
-    with connect() as conn:
+    conn = connect()
+    try:
         apply_sql(conn, schema.read_text(encoding='utf-8'))
+    finally:
+        conn.close()
     print(f"schema initialized: {schema}")
 
 
 def db_ping():
-    with connect() as conn:
+    conn = connect()
+    try:
         with conn.cursor() as cur:
             cur.execute('SELECT DATABASE(), VERSION()')
             row=cur.fetchone()
+    finally:
+        conn.close()
     print(json.dumps({'ok':True,'database':row[0],'mysql_version':row[1]}, ensure_ascii=False))
 
 
@@ -191,12 +210,15 @@ def restore_db(src: Path):
 
 
 def record_release(action, status, from_version='', backup_path='', note=''):
-    with connect() as conn:
+    conn = connect()
+    try:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO release_history(app_version,from_version,action,status,db_backup_path,note)
                 VALUES(%s,%s,%s,%s,%s,%s)
             """, (APP_VERSION, from_version or None, action, status, backup_path or None, note or None))
+    finally:
+        conn.close()
 
 
 def verify_manifest():

@@ -7,7 +7,7 @@ import { LayoutDashboard, PackageSearch, Warehouse, CalendarClock, ListTodo, Dat
 const auth=useAuthStore()
 const items=computed(()=>[
   ['/', '经营总览', LayoutDashboard,true],['/product','商品分析',PackageSearch,true],['/inventory','库存分析',Warehouse,true],['/expiry','效期批次',CalendarClock,true],['/todo','待办任务',ListTodo,true],
-  ['/data-center','数据中心',Database,!!auth.capabilities.can_import],['/settings','系统设置',Settings,!!(auth.capabilities.can_manage_users||auth.capabilities.can_manage_expiry_rules)]
+  ['/data-center','数据中心',Database,!!(auth.capabilities.can_import||auth.capabilities.can_download_data)],['/settings','系统设置',Settings,!!(auth.capabilities.can_manage_users||auth.capabilities.can_manage_expiry_rules)]
 ].filter(x=>x[3]))
 const latestText=ref('最新数据统计自—'),todoCount=ref(0)
 function cnDate(v){if(!v)return '最新数据统计自—';const [y,m,d]=v.split('-').map(Number);return `最新数据统计自${y}年${m}月${d}日`}
