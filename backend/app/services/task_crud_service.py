@@ -176,22 +176,54 @@ def _write_task_dimensions(db: Session, task_id: int, shop_ids: list[int], wareh
         )
 
 
+def _historical_max_suffix(db: Session, assign_date: date) -> int:
+    """返回 todo_tasks 中该日期 task_no 的历史最大后缀（无则 0）。"""
+    prefix = f"TD{assign_date.strftime('%Y%m%d')}-%"
+    dialect = db.get_bind().dialect.name if db.get_bind() else "mysql"
+    if dialect == "mysql":
+        row = db.execute(
+            text(
+                "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(task_no, '-', -1) AS UNSIGNED)), 0) "
+                "FROM todo_tasks WHERE task_no LIKE :prefix"
+            ),
+            {"prefix": prefix},
+        ).scalar_one()
+        return int(row)
+    # SQLite：SUBSTRING_INDEX 不存在，用 Python 解析。
+    rows = db.execute(
+        text("SELECT task_no FROM todo_tasks WHERE task_no LIKE :prefix"),
+        {"prefix": prefix},
+    ).scalars().all()
+    best = 0
+    for t in rows:
+        try:
+            best = max(best, int(str(t).rsplit("-", 1)[-1]))
+        except (ValueError, IndexError):
+            continue
+    return best
+
+
 def _allocate_task_no(db: Session, assign_date: date) -> str:
     """从持久化序列表 task_no_sequences 原子分配任务号。
 
     删除任务不会回退编号，永不复用已使用过的任务号；多管理员并发创建不重复。
     依赖 MySQL 的行锁 + LAST_INSERT_ID(expr) 原子递增；SQLite（测试）用行级回退。
+    若该日期 sequence 缺失，初始化值基于 todo_tasks 历史最大后缀，而非无条件从 1 开始。
     """
     dialect = db.get_bind().dialect.name if db.get_bind() else "mysql"
     if dialect == "mysql":
         db.execute(
             text(
                 """
-                INSERT INTO task_no_sequences(assign_date, last_seq) VALUES(:d, LAST_INSERT_ID(1))
+                INSERT INTO task_no_sequences(assign_date, last_seq)
+                SELECT :d, LAST_INSERT_ID(
+                    COALESCE(MAX(CAST(SUBSTRING_INDEX(task_no, '-', -1) AS UNSIGNED)), 0) + 1
+                )
+                FROM todo_tasks WHERE task_no LIKE :prefix
                 ON DUPLICATE KEY UPDATE last_seq = LAST_INSERT_ID(last_seq + 1)
                 """
             ),
-            {"d": assign_date},
+            {"d": assign_date, "prefix": f"TD{assign_date.strftime('%Y%m%d')}-%"},
         )
         seq = db.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
     else:
@@ -200,13 +232,14 @@ def _allocate_task_no(db: Session, assign_date: date) -> str:
             text("SELECT last_seq FROM task_no_sequences WHERE assign_date=:d"),
             {"d": assign_date},
         ).scalar_one_or_none()
-        seq = (int(row) if row else 0) + 1
         if row is None:
+            seq = _historical_max_suffix(db, assign_date) + 1
             db.execute(
                 text("INSERT INTO task_no_sequences(assign_date, last_seq) VALUES(:d, :seq)"),
                 {"d": assign_date, "seq": seq},
             )
         else:
+            seq = int(row) + 1
             db.execute(
                 text("UPDATE task_no_sequences SET last_seq=:seq WHERE assign_date=:d"),
                 {"d": assign_date, "seq": seq},

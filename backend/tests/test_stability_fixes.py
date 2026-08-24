@@ -98,26 +98,54 @@ class TaskNoSequenceTests(unittest.TestCase):
         self.assertEqual(_allocate_task_no(db, date(2026, 8, 26)), "TD20260826-001")
         db.close()
 
+    def test_backfill_from_historical_tasks_when_sequence_missing(self):
+        # 历史任务 001~018 存在，但 sequence 表为空，allocator 应得到 019 而非复用 001。
+        db = Session(self._engine())
+        for i in range(1, 19):
+            db.execute(
+                text("INSERT INTO todo_tasks(id, task_no) VALUES(:id, :t)"),
+                {"id": i, "t": f"TD20260825-{i:03d}"},
+            )
+        db.commit()
+        self.assertEqual(_allocate_task_no(db, date(2026, 8, 25)), "TD20260825-019")
+        db.close()
+
+    def test_delete_latest_then_allocate_does_not_reuse(self):
+        # 历史 001~018 + sequence 空：先 allocator 初始化到 019；
+        # 再删除 018（历史最大），allocator 仍得 020，不复用 018/019。
+        db = Session(self._engine())
+        for i in range(1, 19):
+            db.execute(
+                text("INSERT INTO todo_tasks(id, task_no) VALUES(:id, :t)"),
+                {"id": i, "t": f"TD20260825-{i:03d}"},
+            )
+        db.commit()
+        self.assertEqual(_allocate_task_no(db, date(2026, 8, 25)), "TD20260825-019")
+        # 删除最新的历史任务 018
+        db.execute(text("DELETE FROM todo_tasks WHERE task_no='TD20260825-018'"))
+        db.commit()
+        self.assertEqual(_allocate_task_no(db, date(2026, 8, 25)), "TD20260825-020")
+        db.close()
+
 
 class MigrationSha256Tests(unittest.TestCase):
     """migration checksum 跨平台：CRLF/CR 标准化为 LF，LF 与 CRLF 内容不 drift。"""
 
-    def _import_migration_sha256(self):
+    def _import_mod(self):
         import importlib.util
         import sys
         scripts_dir = pathlib.Path(__file__).resolve().parents[2] / "scripts"
         spec = importlib.util.spec_from_file_location("release_tool_mod", scripts_dir / "release_tool.py")
         mod = importlib.util.module_from_spec(spec)
-        # release_tool 顶层 import app.*，需要 backend 在 sys.path
         backend_dir = str(pathlib.Path(__file__).resolve().parents[1])
         if backend_dir not in sys.path:
             sys.path.insert(0, backend_dir)
         spec.loader.exec_module(mod)
-        return mod.migration_sha256
+        return mod
 
     def test_lf_and_crlf_same_checksum(self):
         import tempfile
-        migration_sha256 = self._import_migration_sha256()
+        mod = self._import_mod()
         content = "CREATE TABLE t(id INT);\nINSERT INTO t VALUES(1);\n"
         with tempfile.TemporaryDirectory() as td:
             p = pathlib.Path(td)
@@ -125,11 +153,11 @@ class MigrationSha256Tests(unittest.TestCase):
             crlf = p / "crlf.sql"
             lf.write_text(content, encoding="utf-8", newline="\n")
             crlf.write_text(content, encoding="utf-8", newline="\r\n")
-            self.assertEqual(migration_sha256(lf), migration_sha256(crlf))
+            self.assertEqual(mod.migration_sha256(lf), mod.migration_sha256(crlf))
 
     def test_cr_also_normalized(self):
         import tempfile
-        migration_sha256 = self._import_migration_sha256()
+        mod = self._import_mod()
         content = "CREATE TABLE t(id INT);\n"
         with tempfile.TemporaryDirectory() as td:
             p = pathlib.Path(td)
@@ -137,7 +165,24 @@ class MigrationSha256Tests(unittest.TestCase):
             cr = p / "cr.sql"
             lf.write_text(content, encoding="utf-8", newline="\n")
             cr.write_bytes(content.replace("\n", "\r").encode("utf-8"))
-            self.assertEqual(migration_sha256(lf), migration_sha256(cr))
+            self.assertEqual(mod.migration_sha256(lf), mod.migration_sha256(cr))
+
+    def test_legacy_crlf_checksum_accepted(self):
+        # 旧 Windows 存 raw CRLF checksum，新 checkout 为 LF，应判定合法（不 drift）。
+        import tempfile
+        mod = self._import_mod()
+        content = "CREATE TABLE t(id INT);\nINSERT INTO t VALUES(1);\n"
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td)
+            lf = p / "lf.sql"
+            crlf = p / "crlf.sql"
+            lf.write_text(content, encoding="utf-8", newline="\n")
+            crlf.write_text(content, encoding="utf-8", newline="\r\n")
+            # recorded = 旧 raw CRLF checksum（sha256(crlf bytes)）
+            recorded = mod.sha256(crlf)
+            # 当前 path 用 LF，accepted 应包含 legacy_crlf_sha256（= raw CRLF）
+            accepted = {mod.migration_sha256(lf), mod.sha256(lf), mod.legacy_crlf_sha256(lf)}
+            self.assertIn(recorded, accepted)
 
 
 if __name__ == "__main__":

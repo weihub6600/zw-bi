@@ -67,6 +67,20 @@ def migration_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def legacy_crlf_sha256(path: Path) -> str:
+    """legacy 兼容 checksum：标准化为 LF 后再转成 CRLF 求 hash。
+
+    用于兼容旧 Windows release_tool 按 raw CRLF 存的 checksum（新 Linux checkout 为 LF）。
+    """
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024*1024), b''):
+            normalized = chunk.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            crlf = normalized.replace(b'\n', b'\r\n')
+            h.update(crlf)
+    return h.hexdigest()
+
+
 def bootstrap_migration_table(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -95,6 +109,7 @@ def bootstrap_migration_table(conn):
                     ('0152_product_alias_latest_snapshot','15.4.1'),
                     ('0153_task_multi_dimensions','15.4.1'),
                     ('0154_task_no_sequences','15.4.1'),
+                    ('0155_task_no_sequence_backfill','15.4.1'),
                 ]
                 cur.executemany(
                     "INSERT IGNORE INTO schema_migrations(migration_id,app_version,checksum,applied_by) VALUES(%s,%s,%s,'baseline')",
@@ -129,7 +144,8 @@ def migrate():
                 if recorded and recorded != '0'*64:
                     current = migration_sha256(path)
                     raw = sha256(path)
-                    accepted = {current, raw}
+                    legacy_crlf = legacy_crlf_sha256(path)
+                    accepted = {current, raw, legacy_crlf}
                     if recorded not in accepted:
                         raise SystemExit(
                             f"migration 文件被修改：{mid}（记录 checksum={recorded[:12]}…，"
