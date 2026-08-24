@@ -259,6 +259,9 @@ def _aging_rows(db: Session, department_id: int) -> list[list[Any]]:
 
 
 def _build_xlsx(data_type: str, rows: list[list[Any]], department_code: str, *, write_only: bool = False) -> tuple[bytes, str, int, str]:
+    if not rows:
+        # 空结果：不生成无意义 Excel，也不写 data_export 审计记录。
+        raise ExportError("当前筛选条件下暂无可导出数据")
     if data_type == "product":
         headers, date_cols = PRODUCT_HEADERS, set()
     elif data_type == "sales":

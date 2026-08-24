@@ -59,7 +59,7 @@ def _xlsx_response(content: bytes, filename: str, row_count: int | None = None, 
 def download_product(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try:
         result = export_product(db, actor["user_id"], department_code)
-        return _xlsx_response(result["content"], result["filename"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
+        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
 
@@ -114,7 +114,7 @@ def _split_csv(value: str) -> list[str]:
 def download_inventory(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try:
         result = export_inventory(db, actor["user_id"], department_code)
-        return _xlsx_response(result["content"], result["filename"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
+        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
 
@@ -123,7 +123,7 @@ def download_inventory(department_code: str = "B2C", actor: dict = Depends(requi
 def download_aging(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try:
         result = export_aging(db, actor["user_id"], department_code)
-        return _xlsx_response(result["content"], result["filename"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
+        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
 

@@ -241,6 +241,11 @@ CREATE TABLE IF NOT EXISTS task_warehouses (
   CONSTRAINT fk_task_warehouses_warehouse FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS task_no_sequences (
+  assign_date DATE PRIMARY KEY,
+  last_seq INT NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS expiry_rules (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   scope_type ENUM('global','department','product') NOT NULL,

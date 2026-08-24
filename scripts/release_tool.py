@@ -54,6 +54,19 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def migration_sha256(path: Path) -> str:
+    """migration 专用 checksum：将 CRLF/CR 标准化为 LF 后再 hash。
+
+    用于消除 Windows/Linux 换行符差异导致的 checksum drift，不影响 manifest 的通用 sha256。
+    """
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024*1024), b''):
+            normalized = chunk.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            h.update(normalized)
+    return h.hexdigest()
+
+
 def bootstrap_migration_table(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -70,13 +83,18 @@ def bootstrap_migration_table(conn):
         if count == 0:
             cur.execute("SHOW TABLES LIKE 'users'")
             if cur.fetchone():
-                # Existing V15.0 database: its schema already contains the historical migrations.
+                # Existing database (V15.0 老库 或 fresh init-schema 后)：schema 已包含这些历史 migration 的表，
+                # 标记为 baseline，避免重复应用。schema_tables.sql 已含 0152/0153/0154 的表定义。
                 baseline=[
                     ('0141_import_pipeline','14.1.0'),
                     ('0142_dashboard_indexes','14.2.0'),
                     ('0145_import_center_indexes','14.5.0'),
                     ('0146_auth_sessions','14.6.0'),
                     ('0147_audit_indexes','14.7.0'),
+                    ('0151_release_chain','15.4.1'),
+                    ('0152_product_alias_latest_snapshot','15.4.1'),
+                    ('0153_task_multi_dimensions','15.4.1'),
+                    ('0154_task_no_sequences','15.4.1'),
                 ]
                 cur.executemany(
                     "INSERT IGNORE INTO schema_migrations(migration_id,app_version,checksum,applied_by) VALUES(%s,%s,%s,'baseline')",
@@ -106,10 +124,13 @@ def migrate():
             if mid in done:
                 # checksum drift 检查：已执行 migration 的 checksum 与当前文件不一致，
                 # 说明 migration 文件已被修改，必须报错（历史 baseline checksum 全 0 兼容跳过）。
+                # 跨平台：兼容 raw LF / raw CRLF / canonical（LF 标准化）三种历史值。
                 recorded = done[mid]
                 if recorded and recorded != '0'*64:
-                    current = sha256(path)
-                    if current != recorded:
+                    current = migration_sha256(path)
+                    raw = sha256(path)
+                    accepted = {current, raw}
+                    if recorded not in accepted:
                         raise SystemExit(
                             f"migration 文件被修改：{mid}（记录 checksum={recorded[:12]}…，"
                             f"当前文件 checksum={current[:12]}…）。请勿修改已应用的 migration。"
@@ -121,7 +142,7 @@ def migrate():
             conn.autocommit(False)
             try:
                 apply_sql(conn, sql)
-                checksum=sha256(path)
+                checksum=migration_sha256(path)
                 with conn.cursor() as cur:
                     cur.execute(
                         "INSERT INTO schema_migrations(migration_id,app_version,checksum,applied_by) VALUES(%s,%s,%s,'release_tool')",

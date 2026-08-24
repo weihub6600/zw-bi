@@ -5,7 +5,6 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import bindparam, text
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth_service import record_activity
@@ -177,25 +176,42 @@ def _write_task_dimensions(db: Session, task_id: int, shop_ids: list[int], wareh
         )
 
 
-def _next_task_no(db: Session, assign_date: date, *, offset: int = 0) -> str:
-    prefix = f"TD{assign_date.strftime('%Y%m%d')}"
-    count = db.execute(
-        text("SELECT COUNT(*) FROM todo_tasks WHERE task_no LIKE :prefix"),
-        {"prefix": prefix + "%"},
-    ).scalar_one()
-    return f"{prefix}-{int(count)+1+offset:03d}"
+def _allocate_task_no(db: Session, assign_date: date) -> str:
+    """从持久化序列表 task_no_sequences 原子分配任务号。
 
-
-def _is_duplicate_key(exc: Exception) -> bool:
-    """判断是否为唯一键冲突（task_no UNIQUE 撞号）。"""
-    if isinstance(exc, IntegrityError):
-        msg = str(exc.orig) if getattr(exc, "orig", None) else str(exc)
-        return "Duplicate entry" in msg or "UNIQUE" in msg or "duplicate key" in msg.lower()
-    code = getattr(getattr(exc, "orig", None), "args", [None])
-    try:
-        return int(code[0]) == 1062
-    except (TypeError, ValueError, IndexError):
-        return False
+    删除任务不会回退编号，永不复用已使用过的任务号；多管理员并发创建不重复。
+    依赖 MySQL 的行锁 + LAST_INSERT_ID(expr) 原子递增；SQLite（测试）用行级回退。
+    """
+    dialect = db.get_bind().dialect.name if db.get_bind() else "mysql"
+    if dialect == "mysql":
+        db.execute(
+            text(
+                """
+                INSERT INTO task_no_sequences(assign_date, last_seq) VALUES(:d, LAST_INSERT_ID(1))
+                ON DUPLICATE KEY UPDATE last_seq = LAST_INSERT_ID(last_seq + 1)
+                """
+            ),
+            {"d": assign_date},
+        )
+        seq = db.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
+    else:
+        # SQLite 测试环境：读取 + 更新（单线程测试足够）。
+        row = db.execute(
+            text("SELECT last_seq FROM task_no_sequences WHERE assign_date=:d"),
+            {"d": assign_date},
+        ).scalar_one_or_none()
+        seq = (int(row) if row else 0) + 1
+        if row is None:
+            db.execute(
+                text("INSERT INTO task_no_sequences(assign_date, last_seq) VALUES(:d, :seq)"),
+                {"d": assign_date, "seq": seq},
+            )
+        else:
+            db.execute(
+                text("UPDATE task_no_sequences SET last_seq=:seq WHERE assign_date=:d"),
+                {"d": assign_date, "seq": seq},
+            )
+    return f"TD{assign_date.strftime('%Y%m%d')}-{int(seq):03d}"
 
 
 def _assert_can_assign(
@@ -320,45 +336,34 @@ def create_task(
     shop_id = valid_shops[0] if valid_shops else None
     warehouse_id = valid_whs[0] if valid_whs else None
     start = task_start_date(assign_date)
-    # task_no 并发安全：COUNT(*)+1 在并发下可能撞 UNIQUE，撞号时自动重排并有限重试。
-    max_retries = 5
-    task_no = None
-    for attempt in range(max_retries):
-        candidate = _next_task_no(db, assign_date, offset=attempt)
-        try:
-            db.execute(
-                text(
-                    """
-                    INSERT INTO todo_tasks(
-                      task_no,department_id,product_id,owner_user_pk,creator_user_pk,
-                      warehouse_id,shop_id,target_qty,assign_date,start_date,manager_note,status
-                    ) VALUES(
-                      :task_no,:department_id,:product_id,:owner_user_pk,:creator_user_pk,
-                      :warehouse_id,:shop_id,:target_qty,:assign_date,:start_date,:manager_note,'running'
-                    )
-                    """
-                ),
-                {
-                    "task_no": candidate,
-                    "department_id": department_id,
-                    "product_id": product["id"],
-                    "owner_user_pk": owner["id"],
-                    "creator_user_pk": actor["id"],
-                    "warehouse_id": warehouse_id,
-                    "shop_id": shop_id,
-                    "target_qty": target_qty,
-                    "assign_date": assign_date,
-                    "start_date": start,
-                    "manager_note": manager_note.strip() or None,
-                },
+    # task_no 由持久化序列表原子分配，删除任务不回退、永不复用、并发不重复。
+    task_no = _allocate_task_no(db, assign_date)
+    db.execute(
+        text(
+            """
+            INSERT INTO todo_tasks(
+              task_no,department_id,product_id,owner_user_pk,creator_user_pk,
+              warehouse_id,shop_id,target_qty,assign_date,start_date,manager_note,status
+            ) VALUES(
+              :task_no,:department_id,:product_id,:owner_user_pk,:creator_user_pk,
+              :warehouse_id,:shop_id,:target_qty,:assign_date,:start_date,:manager_note,'running'
             )
-            task_no = candidate
-            break
-        except IntegrityError as exc:
-            if _is_duplicate_key(exc) and attempt < max_retries - 1:
-                db.rollback()
-                continue
-            raise
+            """
+        ),
+        {
+            "task_no": task_no,
+            "department_id": department_id,
+            "product_id": product["id"],
+            "owner_user_pk": owner["id"],
+            "creator_user_pk": actor["id"],
+            "warehouse_id": warehouse_id,
+            "shop_id": shop_id,
+            "target_qty": target_qty,
+            "assign_date": assign_date,
+            "start_date": start,
+            "manager_note": manager_note.strip() or None,
+        },
+    )
     db.execute(
         text(
             """

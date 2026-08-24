@@ -144,12 +144,10 @@ class ExportFilterConsistencyTests(unittest.TestCase):
         db.close()
 
     def test_empty_result_returns_header_only_xlsx(self):
+        from app.services.export_service import ExportError
         db = self._db()
-        result = export_sales(db, "MEM", "B2C", start_date=date(2026, 1, 1), end_date=date(2026, 1, 31))
-        self.assertEqual(result["row_count"], 0)
-        headers, body = _rows(result["content"])
-        self.assertEqual(headers[0], "\u4e1a\u52a1\u65e5\u671f")  # 业务日期
-        self.assertEqual(len(body), 0)
+        with self.assertRaises(ExportError):
+            export_sales(db, "MEM", "B2C", start_date=date(2026, 1, 1), end_date=date(2026, 1, 31))
         db.close()
 
 
