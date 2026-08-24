@@ -81,6 +81,45 @@ def legacy_crlf_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+# manifest 中按文本处理的扩展名（换行符标准化），其余按二进制 raw 校验。
+MANIFEST_TEXT_SUFFIXES = {
+    ".py", ".sql", ".js", ".css", ".html", ".json", ".txt", ".md", ".sh",
+    ".vue", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+}
+# 无扩展名但按文本处理的文件
+MANIFEST_TEXT_NAMES = {"VERSION", ".env.example", ".gitignore", ".gitattributes"}
+
+
+def is_manifest_text_file(path: Path) -> bool:
+    return path.suffix.lower() in MANIFEST_TEXT_SUFFIXES or path.name in MANIFEST_TEXT_NAMES
+
+
+def manifest_canonical_sha256(path: Path) -> str:
+    """manifest 文本文件 canonical hash：CRLF/CR 标准化为 LF 后 SHA256。"""
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024*1024), b''):
+            h.update(chunk.replace(b'\r\n', b'\n').replace(b'\r', b'\n'))
+    return h.hexdigest()
+
+
+def manifest_legacy_crlf_sha256(path: Path) -> str:
+    """manifest 文本文件 legacy CRLF hash：标准化 LF 后再转 CRLF 后 SHA256。"""
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024*1024), b''):
+            normalized = chunk.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            h.update(normalized.replace(b'\n', b'\r\n'))
+    return h.hexdigest()
+
+
+def manifest_file_sha256(path: Path) -> str:
+    """生成 manifest 用的 hash：文本文件用 canonical LF，二进制用 raw。"""
+    if is_manifest_text_file(path):
+        return manifest_canonical_sha256(path)
+    return sha256(path)
+
+
 def bootstrap_migration_table(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -274,8 +313,18 @@ def verify_manifest():
     bad=[]
     for rel, expected in data.get('files',{}).items():
         p=ROOT/rel
-        if not p.exists() or sha256(p)!=expected:
+        if not p.exists():
             bad.append(rel)
+            continue
+        if is_manifest_text_file(p):
+            # 文本文件跨平台兼容：接受 raw / canonical LF / legacy CRLF 三种 hash。
+            accepted = {sha256(p), manifest_canonical_sha256(p), manifest_legacy_crlf_sha256(p)}
+            if expected not in accepted:
+                bad.append(rel)
+        else:
+            # 二进制文件严格 raw byte 校验。
+            if sha256(p) != expected:
+                bad.append(rel)
     if bad:
         raise SystemExit('文件校验失败：'+', '.join(bad[:20]))
     print(f"manifest ok: {len(data.get('files',{}))} files")

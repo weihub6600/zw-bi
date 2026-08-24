@@ -241,5 +241,90 @@ class BootstrapMigrationTableTests(unittest.TestCase):
             self.assertNotIn(mid, executed)
 
 
+class ManifestHashTests(unittest.TestCase):
+    """manifest 跨平台 hash：文本 LF/CRLF 兼容，二进制严格 raw。"""
+
+    def _import_mod(self):
+        import importlib.util
+        import sys
+        scripts_dir = pathlib.Path(__file__).resolve().parents[2] / "scripts"
+        spec = importlib.util.spec_from_file_location("release_tool_mod3", scripts_dir / "release_tool.py")
+        mod = importlib.util.module_from_spec(spec)
+        backend_dir = str(pathlib.Path(__file__).resolve().parents[1])
+        if backend_dir not in sys.path:
+            sys.path.insert(0, backend_dir)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_lf_and_crlf_canonical_same(self):
+        import tempfile
+        mod = self._import_mod()
+        content = "print('hi')\nprint('x')\n"
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td)
+            lf = p / "a.py"; crlf = p / "b.py"
+            lf.write_text(content, encoding="utf-8", newline="\n")
+            crlf.write_text(content, encoding="utf-8", newline="\r\n")
+            self.assertEqual(mod.manifest_canonical_sha256(lf), mod.manifest_canonical_sha256(crlf))
+
+    def test_verify_accepts_raw_lf_when_file_crlf(self):
+        import tempfile
+        mod = self._import_mod()
+        content = "x=1\n"
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td)
+            lf = p / "lf.py"; crlf = p / "crlf.py"
+            lf.write_text(content, encoding="utf-8", newline="\n")
+            crlf.write_text(content, encoding="utf-8", newline="\r\n")
+            # 旧 manifest 存 raw LF hash，当前文件是 CRLF
+            expected = mod.sha256(lf)
+            accepted = {mod.sha256(crlf), mod.manifest_canonical_sha256(crlf), mod.manifest_legacy_crlf_sha256(crlf)}
+            self.assertIn(expected, accepted)
+
+    def test_verify_accepts_raw_crlf_when_file_lf(self):
+        import tempfile
+        mod = self._import_mod()
+        content = "x=1\n"
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td)
+            lf = p / "lf.py"; crlf = p / "crlf.py"
+            lf.write_text(content, encoding="utf-8", newline="\n")
+            crlf.write_text(content, encoding="utf-8", newline="\r\n")
+            # 旧 manifest 存 raw CRLF hash，当前文件是 LF
+            expected = mod.sha256(crlf)
+            accepted = {mod.sha256(lf), mod.manifest_canonical_sha256(lf), mod.manifest_legacy_crlf_sha256(lf)}
+            self.assertIn(expected, accepted)
+
+    def test_modified_content_fails(self):
+        import tempfile
+        mod = self._import_mod()
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td) / "a.py"
+            p.write_text("x=1\n", encoding="utf-8")
+            expected = mod.sha256(p)
+            p.write_text("x=2\n", encoding="utf-8")
+            accepted = {mod.sha256(p), mod.manifest_canonical_sha256(p), mod.manifest_legacy_crlf_sha256(p)}
+            self.assertNotIn(expected, accepted)
+
+    def test_binary_modified_fails(self):
+        import tempfile
+        mod = self._import_mod()
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td) / "a.xlsx"
+            p.write_bytes(b"PK\x03\x04" + b"\x00" * 100)
+            expected = mod.sha256(p)
+            p.write_bytes(b"PK\x03\x04" + b"\x00" * 99 + b"\x01")
+            self.assertNotEqual(mod.sha256(p), expected)
+
+    def test_text_vs_binary_classification(self):
+        import tempfile
+        mod = self._import_mod()
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td)
+            self.assertTrue(mod.is_manifest_text_file(p / "a.py"))
+            self.assertTrue(mod.is_manifest_text_file(p / "VERSION"))
+            self.assertFalse(mod.is_manifest_text_file(p / "a.xlsx"))
+
+
 if __name__ == "__main__":
     unittest.main()
