@@ -56,7 +56,8 @@ async function downloadFiltered(){
   try{
     const r=await exportInventoryAnalysis({
       departmentCode:f.departmentCode,
-      warehouses:f.warehouses,productSearch:f.productSearch,
+      shops:f.shops,warehouses:f.warehouses,days:days.value,
+      productSearch:f.productSearch,
       includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,
     })
     lastExportCount.value=r.rowCount

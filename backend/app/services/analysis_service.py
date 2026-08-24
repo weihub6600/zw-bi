@@ -300,7 +300,7 @@ def get_expiry_batches(
     remaining_pct_min: float | None = None,
     remaining_pct_max: float | None = None,
     merchant_code: str | None = None,
-    limit: int = 1000,
+    limit: int | None = 1000,
 ) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     department_id = int(department["id"])
@@ -360,7 +360,7 @@ def get_expiry_batches(
         },
         "summary": summary,
         "filtered_count": len(filtered),
-        "rows": filtered[: max(1, min(limit, 5000))],
+        "rows": filtered if limit is None else filtered[: max(1, min(limit, 5000))],
     }
 
 

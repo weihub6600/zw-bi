@@ -31,7 +31,7 @@ INVENTORY_ANALYSIS_HEADERS = ["商家编码", "商品名称", "库存分类", "�
 # 效期批次明细（ExpiryView 的批次级效期）
 EXPIRY_BATCH_HEADERS = ["仓库", "商家编码", "商品名称", "库存数量", "生产日期", "过期日期", "保质总天数", "剩余天数", "剩余效期%", "效期状态", "规则来源"]
 
-# 各类导出对应的文件名前缀
+# 各类导出对应的文件名前缀（中文，用于 filename* 展示）
 FILENAME_PREFIX = {
     "product": "商品资料",
     "sales": "销量明细",
@@ -39,6 +39,16 @@ FILENAME_PREFIX = {
     "aging": "库龄数据",
     "inventory_analysis": "库存明细",
     "expiry_batches": "效期批次",
+}
+
+# 各类导出对应的 ASCII 文件名前缀（用于 Content-Disposition 的 filename 兜底，避免 latin-1 编码失败）
+FILENAME_ASCII = {
+    "product": "product",
+    "sales": "sales",
+    "inventory": "inventory_expiry",
+    "aging": "aging",
+    "inventory_analysis": "inventory",
+    "expiry_batches": "expiry",
 }
 
 
@@ -50,7 +60,23 @@ def _to_float(value: Any) -> float | None:
     return float(value)
 
 
-def _make_workbook(headers: list[str], rows: list[list[Any]], date_cols: set[int]) -> bytes:
+def _make_workbook(headers: list[str], rows: list[list[Any]], date_cols: set[int], *, write_only: bool = False) -> bytes:
+    if write_only:
+        # 流式写入，适用于大数据量（如效期批次完整导出），降低内存占用。
+        wb = Workbook(write_only=True)
+        ws = wb.create_sheet("导出数据")
+        ws.append(headers)
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
+        for col_idx, _ in enumerate(headers, start=1):
+            letter = get_column_letter(col_idx)
+            ws.column_dimensions[letter].width = 12 if col_idx in date_cols else 18
+        for row in rows:
+            ws.append(row)
+        buffer = io.BytesIO()
+        wb.save(buffer)
+        return buffer.getvalue()
+
     wb = Workbook()
     ws = wb.active
     ws.title = "导出数据"
@@ -232,7 +258,7 @@ def _aging_rows(db: Session, department_id: int) -> list[list[Any]]:
     return out
 
 
-def _build_xlsx(data_type: str, rows: list[list[Any]], department_code: str) -> tuple[bytes, str, int]:
+def _build_xlsx(data_type: str, rows: list[list[Any]], department_code: str, *, write_only: bool = False) -> tuple[bytes, str, int]:
     if data_type == "product":
         headers, date_cols = PRODUCT_HEADERS, set()
     elif data_type == "sales":
@@ -247,21 +273,23 @@ def _build_xlsx(data_type: str, rows: list[list[Any]], department_code: str) -> 
         headers, date_cols = EXPIRY_BATCH_HEADERS, {5, 6}
     else:
         raise ExportError(f"不支持的数据类型：{data_type}")
-    content = _make_workbook(headers, rows, date_cols)
-    filename = f"{department_code}_{FILENAME_PREFIX[data_type]}_{date.today().strftime('%Y%m%d')}.xlsx"
-    return content, filename, len(rows)
+    content = _make_workbook(headers, rows, date_cols, write_only=write_only)
+    suffix = date.today().strftime('%Y%m%d')
+    filename = f"{department_code}_{FILENAME_PREFIX[data_type]}_{suffix}.xlsx"
+    ascii_filename = f"{department_code}_{FILENAME_ASCII[data_type]}_{suffix}.xlsx"
+    return content, filename, len(rows), ascii_filename
 
 
 def export_product(db: Session, actor_user_id: str, department_code: str) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     rows = _product_rows(db, int(department["id"]))
-    content, filename, row_count = _build_xlsx("product", rows, department["code"])
+    content, filename, row_count, ascii_filename = _build_xlsx("product", rows, department["code"])
     record_activity(
         db, int(actor["id"]), "data_export",
         department_id=int(department["id"]),
         detail={"department_code": department["code"], "data_type": "product", "start_date": None, "end_date": None, "row_count": row_count, "filename": filename},
     )
-    return {"content": content, "filename": filename, "row_count": row_count}
+    return {"content": content, "filename": filename, "ascii_filename": ascii_filename, "row_count": row_count}
 
 
 def export_sales(
@@ -271,6 +299,7 @@ def export_sales(
     *,
     start_date: date | None = None,
     end_date: date | None = None,
+    days: int = 30,
     shops: Iterable[str] = (),
     warehouses: Iterable[str] = (),
     product_search: str = "",
@@ -282,6 +311,7 @@ def export_sales(
 
     筛选条件与 dashboard/analysis 列表完全一致（复用 _scope_clauses），
     唯一差异是导出返回完整结果而不分页。
+    日期：自定义区间优先；否则按 days 预设（1/7/14/30）以最新销售日为锚点。
     """
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     if start_date and end_date and start_date > end_date:
@@ -289,6 +319,7 @@ def export_sales(
     scope = DashboardScope(
         actor_user_id=actor_user_id,
         department_code=department_code,
+        days=days,
         start_date=start_date,
         end_date=end_date,
         shops=tuple(shops or ()),
@@ -299,19 +330,20 @@ def export_sales(
         product_codes=tuple(product_codes or ()),
     )
     rows = _sales_rows(db, int(department["id"]), scope)
-    content, filename, row_count = _build_xlsx("sales", rows, department["code"])
+    content, filename, row_count, ascii_filename = _build_xlsx("sales", rows, department["code"])
     record_activity(
         db, int(actor["id"]), "data_export",
         department_id=int(department["id"]),
         detail={"department_code": department["code"], "data_type": "sales", "start_date": start_date.isoformat() if start_date else None, "end_date": end_date.isoformat() if end_date else None, "row_count": row_count, "filename": filename},
     )
-    return {"content": content, "filename": filename, "row_count": row_count}
+    return {"content": content, "filename": filename, "ascii_filename": ascii_filename, "row_count": row_count}
 
 
-def _scope_from_params(actor_user_id: str, department_code: str, *, warehouses, product_search, include_name, exclude_name, product_codes, start_date=None, end_date=None, shops=()) -> DashboardScope:
+def _scope_from_params(actor_user_id: str, department_code: str, *, warehouses, product_search, include_name, exclude_name, product_codes, start_date=None, end_date=None, shops=(), days=30) -> DashboardScope:
     return DashboardScope(
         actor_user_id=actor_user_id,
         department_code=department_code,
+        days=days,
         start_date=start_date,
         end_date=end_date,
         shops=tuple(shops or ()),
@@ -328,7 +360,9 @@ def export_inventory_analysis(
     actor_user_id: str,
     department_code: str,
     *,
+    shops: Iterable[str] = (),
     warehouses: Iterable[str] = (),
+    days: int = 30,
     product_search: str = "",
     include_name: str = "",
     exclude_name: str = "",
@@ -338,7 +372,8 @@ def export_inventory_analysis(
     """导出库存明细（InventoryView 的 SKU 级库存健康度），复用 get_inventory_analysis 完整筛选与权限。"""
     scope = _scope_from_params(
         actor_user_id, department_code,
-        warehouses=warehouses, product_search=product_search, include_name=include_name,
+        shops=shops, warehouses=warehouses, days=days,
+        product_search=product_search, include_name=include_name,
         exclude_name=exclude_name, product_codes=product_codes,
     )
     result = get_inventory_analysis(db, scope, category=category)
@@ -353,13 +388,13 @@ def export_inventory_analysis(
         ]
         for r in rows
     ]
-    content, filename, row_count = _build_xlsx("inventory_analysis", data, department["code"])
+    content, filename, row_count, ascii_filename = _build_xlsx("inventory_analysis", data, department["code"])
     record_activity(
         db, int(actor["id"]), "data_export",
         department_id=int(department["id"]),
         detail={"department_code": department["code"], "data_type": "inventory_analysis", "start_date": None, "end_date": None, "row_count": row_count, "filename": filename},
     )
-    return {"content": content, "filename": filename, "row_count": row_count}
+    return {"content": content, "filename": filename, "ascii_filename": ascii_filename, "row_count": row_count}
 
 
 def export_expiry_batches(
@@ -393,7 +428,7 @@ def export_expiry_batches(
         remaining_pct_min=remaining_pct_min,
         remaining_pct_max=remaining_pct_max,
         merchant_code=merchant_code,
-        limit=5000,
+        limit=None,  # 完整导出，不截断
     )
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     rows = result["rows"]
@@ -405,34 +440,34 @@ def export_expiry_batches(
         ]
         for r in rows
     ]
-    content, filename, row_count = _build_xlsx("expiry_batches", data, department["code"])
+    content, filename, row_count, ascii_filename = _build_xlsx("expiry_batches", data, department["code"], write_only=True)
     record_activity(
         db, int(actor["id"]), "data_export",
         department_id=int(department["id"]),
         detail={"department_code": department["code"], "data_type": "expiry_batches", "start_date": None, "end_date": None, "row_count": row_count, "filename": filename},
     )
-    return {"content": content, "filename": filename, "row_count": row_count}
+    return {"content": content, "filename": filename, "ascii_filename": ascii_filename, "row_count": row_count}
 
 
 def export_inventory(db: Session, actor_user_id: str, department_code: str) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     rows = _inventory_rows(db, int(department["id"]))
-    content, filename, row_count = _build_xlsx("inventory", rows, department["code"])
+    content, filename, row_count, ascii_filename = _build_xlsx("inventory", rows, department["code"])
     record_activity(
         db, int(actor["id"]), "data_export",
         department_id=int(department["id"]),
         detail={"department_code": department["code"], "data_type": "inventory", "start_date": None, "end_date": None, "row_count": row_count, "filename": filename},
     )
-    return {"content": content, "filename": filename, "row_count": row_count}
+    return {"content": content, "filename": filename, "ascii_filename": ascii_filename, "row_count": row_count}
 
 
 def export_aging(db: Session, actor_user_id: str, department_code: str) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     rows = _aging_rows(db, int(department["id"]))
-    content, filename, row_count = _build_xlsx("aging", rows, department["code"])
+    content, filename, row_count, ascii_filename = _build_xlsx("aging", rows, department["code"])
     record_activity(
         db, int(actor["id"]), "data_export",
         department_id=int(department["id"]),
         detail={"department_code": department["code"], "data_type": "aging", "start_date": None, "end_date": None, "row_count": row_count, "filename": filename},
     )
-    return {"content": content, "filename": filename, "row_count": row_count}
+    return {"content": content, "filename": filename, "ascii_filename": ascii_filename, "row_count": row_count}

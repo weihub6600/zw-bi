@@ -43,10 +43,13 @@ async function loadDefaultRange() {
 // 销量：从全局筛选条继承全部有效筛选条件，构造与列表一致的查询参数。
 function salesFilterParams() {
   const p = f.dateParams
+  // 自定义区间传 start/end；预设(1d/7d/14d/30d)传 days，由后端以最新销售日为锚点解析。
+  const isCustom = f.dateRange === 'custom'
   return {
     departmentCode: departmentCode.value,
-    startDate: p.startDate || startDate.value || '',
-    endDate: p.endDate || endDate.value || '',
+    startDate: isCustom ? (p.startDate || '') : '',
+    endDate: isCustom ? (p.endDate || '') : '',
+    days: p.days || 30,
     shops: [...f.shops],
     warehouses: [...f.warehouses],
     productSearch: f.productSearch || '',

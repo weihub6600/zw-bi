@@ -22,8 +22,15 @@ async function downloadFile({ path, params }) {
     throw err
   }
   const disposition = res.headers.get('Content-Disposition') || ''
-  const match = disposition.match(/filename="?([^";]+)"?/)
-  let filename = match ? match[1] : 'download.xlsx'
+  // 优先解析 filename*=UTF-8''...（中文真实文件名），缺失时回退 ASCII filename。
+  const starMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  let filename = 'download.xlsx'
+  if (starMatch) {
+    try { filename = decodeURIComponent(starMatch[1]) } catch { filename = starMatch[1] }
+  } else {
+    const match = disposition.match(/filename="?([^";]+)"?/)
+    filename = match ? match[1] : 'download.xlsx'
+  }
   const rowCount = Number(res.headers.get('X-Export-Row-Count') || 0) || 0
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
@@ -41,13 +48,14 @@ export function exportProduct(departmentCode) {
   return downloadFile({ path: '/api/exports/product', params: { department_code: departmentCode } })
 }
 
-export function exportSales({ departmentCode, startDate, endDate, shops, warehouses, productSearch, includeName, excludeName, productCodes }) {
+export function exportSales({ departmentCode, startDate, endDate, days, shops, warehouses, productSearch, includeName, excludeName, productCodes }) {
   return downloadFile({
     path: '/api/exports/sales',
     params: {
       department_code: departmentCode,
       start_date: startDate,
       end_date: endDate,
+      days: days,
       shops: (shops || []).join(','),
       warehouses: (warehouses || []).join(','),
       product_search: productSearch,
@@ -66,12 +74,14 @@ export function exportAging(departmentCode) {
   return downloadFile({ path: '/api/exports/aging', params: { department_code: departmentCode } })
 }
 
-export function exportInventoryAnalysis({ departmentCode, warehouses, productSearch, includeName, excludeName, productCodes, category }) {
+export function exportInventoryAnalysis({ departmentCode, shops, warehouses, days, productSearch, includeName, excludeName, productCodes, category }) {
   return downloadFile({
     path: '/api/exports/inventory-analysis',
     params: {
       department_code: departmentCode,
+      shops: (shops || []).join(','),
       warehouses: (warehouses || []).join(','),
+      days: days,
       product_search: productSearch,
       include_name: includeName,
       exclude_name: excludeName,

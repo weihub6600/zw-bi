@@ -31,9 +31,17 @@ def _handle(exc: Exception):
     raise exc
 
 
-def _xlsx_response(content: bytes, filename: str, row_count: int | None = None):
+def _xlsx_response(content: bytes, filename: str, row_count: int | None = None, ascii_filename: str = "export.xlsx"):
+    from urllib.parse import quote
+
     from fastapi.responses import Response
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+    # RFC 6266/5987：ASCII 文件名兜底 + filename* 携带 UTF-8 中文真实名，
+    # 避免中文文件名触发 latin-1 编码失败（UnicodeEncodeError → HTTP 500）。
+    safe_name = ascii_filename or "export.xlsx"
+    encoded_name = quote(filename, safe="")
+    content_disposition = f"attachment; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}"
+    headers = {"Content-Disposition": content_disposition}
     if row_count is not None:
         headers["X-Export-Row-Count"] = str(row_count)
     return Response(
@@ -47,7 +55,7 @@ def _xlsx_response(content: bytes, filename: str, row_count: int | None = None):
 def download_product(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try:
         result = export_product(db, actor["user_id"], department_code)
-        return _xlsx_response(result["content"], result["filename"])
+        return _xlsx_response(result["content"], result["filename"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
 
@@ -57,6 +65,7 @@ def download_sales(
     department_code: str = "B2C",
     start_date: date | None = None,
     end_date: date | None = None,
+    days: int = 30,
     shops: str = "",
     warehouses: str = "",
     product_search: str = "",
@@ -68,7 +77,7 @@ def download_sales(
 ):
     """下载当前筛选结果对应的全部销量明细（不分页）。
 
-    筛选条件（店铺/仓库/商品名/商家编码等）与列表页一致，全部由后端
+    筛选条件（日期预设/店铺/仓库/商品名/商家编码等）与列表页一致，全部由后端
     基于登录用户权限范围过滤，跨部门一律 403。
     """
     try:
@@ -78,6 +87,7 @@ def download_sales(
             department_code,
             start_date=start_date,
             end_date=end_date,
+            days=days,
             shops=_split_csv(shops),
             warehouses=_split_csv(warehouses),
             product_search=product_search,
@@ -85,7 +95,7 @@ def download_sales(
             exclude_name=exclude_name,
             product_codes=_split_csv(product_codes),
         )
-        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"])
+        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
 
@@ -100,7 +110,7 @@ def _split_csv(value: str) -> list[str]:
 def download_inventory(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try:
         result = export_inventory(db, actor["user_id"], department_code)
-        return _xlsx_response(result["content"], result["filename"])
+        return _xlsx_response(result["content"], result["filename"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
 
@@ -109,7 +119,7 @@ def download_inventory(department_code: str = "B2C", actor: dict = Depends(requi
 def download_aging(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try:
         result = export_aging(db, actor["user_id"], department_code)
-        return _xlsx_response(result["content"], result["filename"])
+        return _xlsx_response(result["content"], result["filename"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
 
@@ -117,7 +127,9 @@ def download_aging(department_code: str = "B2C", actor: dict = Depends(require_a
 @router.get("/inventory-analysis")
 def download_inventory_analysis(
     department_code: str = "B2C",
+    shops: str = "",
     warehouses: str = "",
+    days: int = 30,
     product_search: str = "",
     include_name: str = "",
     exclude_name: str = "",
@@ -132,14 +144,16 @@ def download_inventory_analysis(
             db,
             actor["user_id"],
             department_code,
+            shops=_split_csv(shops),
             warehouses=_split_csv(warehouses),
+            days=days,
             product_search=product_search,
             include_name=include_name,
             exclude_name=exclude_name,
             product_codes=_split_csv(product_codes),
             category=category or None,
         )
-        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"])
+        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
 
@@ -179,6 +193,6 @@ def download_expiry_batches(
             remaining_pct_max=remaining_pct_max,
             merchant_code=merchant_code or None,
         )
-        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"])
+        return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
         _handle(exc)
