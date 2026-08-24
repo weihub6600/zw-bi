@@ -1,10 +1,11 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { ArrowUpDown } from 'lucide-vue-next'
+import { ArrowUpDown, Download } from 'lucide-vue-next'
 import FilterBar from '../components/FilterBar.vue'
 import { useFilterStore } from '../stores/filter'
 import { fetchDashboardOptions } from '../api/dashboard'
 import { fetchInventoryAnalysis } from '../api/analysis'
+import { exportInventoryAnalysis } from '../api/exports'
 
 const f = useFilterStore()
 const data = ref(null)
@@ -12,6 +13,9 @@ const error = ref('')
 const loading = ref(false)
 const shopOptions = ref([])
 const warehouseOptions = ref([])
+const exporting = ref(false)
+const exportError = ref('')
+const lastExportCount = ref(null)
 let timer = null
 let serial = 0
 
@@ -47,6 +51,19 @@ async function load(){
   finally{if(id===serial)loading.value=false}
 }
 function schedule(){clearTimeout(timer);timer=setTimeout(load,260)}
+async function downloadFiltered(){
+  exporting.value=true;exportError.value=''
+  try{
+    const r=await exportInventoryAnalysis({
+      departmentCode:f.departmentCode,
+      shops:f.shops,warehouses:f.warehouses,days:days.value,
+      productSearch:f.productSearch,
+      includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,
+    })
+    lastExportCount.value=r.rowCount
+  }catch(e){exportError.value=e.message}
+  finally{exporting.value=false}
+}
 watch(()=>[f.dateRange,JSON.stringify(f.shops),JSON.stringify(f.warehouses),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes)],schedule)
 onMounted(async()=>{await loadOptions();await load()})
 </script>
@@ -81,7 +98,8 @@ onMounted(async()=>{await loadOptions();await load()})
       </section>
 
       <section class="panel table-wrap">
-        <div class="section-head"><div><h3>全部库存商品</h3><span>当前 {{ n(data.totals?.sku_count) }} 个 SKU</span></div></div>
+        <div class="section-head"><div><h3>全部库存商品</h3><span>当前 {{ n(data.totals?.sku_count) }} 个 SKU</span></div><button class="rank-tab" :disabled="exporting" @click="downloadFiltered"><Download :size="14" /> {{ exporting?'正在生成…':`下载当前筛选结果${lastExportCount!=null?'（'+lastExportCount+'条）':''}` }}</button></div>
+        <div v-if="exportError" class="api-error compact"><span>{{ exportError }}</span></div>
         <table class="inventory-table">
           <thead><tr><th>商品</th><th>商家编码</th><th>分类</th><th><button class="sort-th" @click="toggleSort('stock_qty')">库存 <ArrowUpDown :size="12"/>{{ mark('stock_qty') }}</button></th><th><button class="sort-th" @click="toggleSort('sales7')">7天销量 <ArrowUpDown :size="12"/>{{ mark('sales7') }}</button></th><th><button class="sort-th" @click="toggleSort('sales14')">14天销量 <ArrowUpDown :size="12"/>{{ mark('sales14') }}</button></th><th><button class="sort-th" @click="toggleSort('sales30')">30天销量 <ArrowUpDown :size="12"/>{{ mark('sales30') }}</button></th><th><button class="sort-th" @click="toggleSort('predicted_daily')">预计日销 <ArrowUpDown :size="12"/>{{ mark('predicted_daily') }}</button></th><th><button class="sort-th" @click="toggleSort('cover_days','asc')">预计周转 <ArrowUpDown :size="12"/>{{ mark('cover_days') }}</button></th><th><button class="sort-th" @click="toggleSort('weighted_aging_days')">加权库龄 <ArrowUpDown :size="12"/>{{ mark('weighted_aging_days') }}</button></th></tr></thead>
           <tbody>

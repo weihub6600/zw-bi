@@ -54,6 +54,33 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def migration_sha256(path: Path) -> str:
+    """migration 专用 checksum：将 CRLF/CR 标准化为 LF 后再 hash。
+
+    用于消除 Windows/Linux 换行符差异导致的 checksum drift，不影响 manifest 的通用 sha256。
+    """
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024*1024), b''):
+            normalized = chunk.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            h.update(normalized)
+    return h.hexdigest()
+
+
+def legacy_crlf_sha256(path: Path) -> str:
+    """legacy 兼容 checksum：标准化为 LF 后再转成 CRLF 求 hash。
+
+    用于兼容旧 Windows release_tool 按 raw CRLF 存的 checksum（新 Linux checkout 为 LF）。
+    """
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024*1024), b''):
+            normalized = chunk.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+            crlf = normalized.replace(b'\n', b'\r\n')
+            h.update(crlf)
+    return h.hexdigest()
+
+
 def bootstrap_migration_table(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -70,7 +97,10 @@ def bootstrap_migration_table(conn):
         if count == 0:
             cur.execute("SHOW TABLES LIKE 'users'")
             if cur.fetchone():
-                # Existing V15.0 database: its schema already contains the historical migrations.
+                # 旧版数据库（有 users 等历史基础表，但没有 schema_migrations）。
+                # 只 baseline 确定属于历史基础库的 0141~0147；0151 及之后的 migration
+                # 必须由 migrate() 正常执行，否则升级会缺失 release_history /
+                # product_name_aliases / task_shops / task_warehouses / task_no_sequences 等表。
                 baseline=[
                     ('0141_import_pipeline','14.1.0'),
                     ('0142_dashboard_indexes','14.2.0'),
@@ -94,40 +124,73 @@ def apply_sql(conn, sql: str):
 def migrate():
     mig_dir = ROOT / 'backend' / 'sql' / 'migrations'
     files = sorted(mig_dir.glob('*.sql'))
-    with connect() as conn:
+    conn = connect()
+    try:
         bootstrap_migration_table(conn)
         with conn.cursor() as cur:
-            cur.execute("SELECT migration_id FROM schema_migrations")
-            done={r[0] for r in cur.fetchall()}
+            cur.execute("SELECT migration_id, checksum FROM schema_migrations")
+            done={r[0]: r[1] for r in cur.fetchall()}
         applied=[]
         for path in files:
             mid=path.stem
             if mid in done:
+                # checksum drift 检查：已执行 migration 的 checksum 与当前文件不一致，
+                # 说明 migration 文件已被修改，必须报错（历史 baseline checksum 全 0 兼容跳过）。
+                # 跨平台：兼容 raw LF / raw CRLF / canonical（LF 标准化）三种历史值。
+                recorded = done[mid]
+                if recorded and recorded != '0'*64:
+                    current = migration_sha256(path)
+                    raw = sha256(path)
+                    legacy_crlf = legacy_crlf_sha256(path)
+                    accepted = {current, raw, legacy_crlf}
+                    if recorded not in accepted:
+                        raise SystemExit(
+                            f"migration 文件被修改：{mid}（记录 checksum={recorded[:12]}…，"
+                            f"当前文件 checksum={current[:12]}…）。请勿修改已应用的 migration。"
+                        )
                 continue
             sql=path.read_text(encoding='utf-8')
-            apply_sql(conn, sql)
-            checksum=sha256(path)
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO schema_migrations(migration_id,app_version,checksum,applied_by) VALUES(%s,%s,%s,'release_tool')",
-                    (mid, APP_VERSION, checksum),
-                )
-            applied.append(mid)
+            # 每个 migration 文件独立事务：成功则连同版本记录一并提交，
+            # 失败则整体回滚，确保不留半状态、可安全重跑（幂等）。
+            conn.autocommit(False)
+            try:
+                apply_sql(conn, sql)
+                checksum=migration_sha256(path)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO schema_migrations(migration_id,app_version,checksum,applied_by) VALUES(%s,%s,%s,'release_tool')",
+                        (mid, APP_VERSION, checksum),
+                    )
+                conn.commit()
+                applied.append(mid)
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit(True)
         return applied
+    finally:
+        conn.close()
 
 
 def init_schema():
     schema=ROOT/'backend/sql/schema_tables.sql'
-    with connect() as conn:
+    conn = connect()
+    try:
         apply_sql(conn, schema.read_text(encoding='utf-8'))
+    finally:
+        conn.close()
     print(f"schema initialized: {schema}")
 
 
 def db_ping():
-    with connect() as conn:
+    conn = connect()
+    try:
         with conn.cursor() as cur:
             cur.execute('SELECT DATABASE(), VERSION()')
             row=cur.fetchone()
+    finally:
+        conn.close()
     print(json.dumps({'ok':True,'database':row[0],'mysql_version':row[1]}, ensure_ascii=False))
 
 
@@ -191,12 +254,15 @@ def restore_db(src: Path):
 
 
 def record_release(action, status, from_version='', backup_path='', note=''):
-    with connect() as conn:
+    conn = connect()
+    try:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO release_history(app_version,from_version,action,status,db_backup_path,note)
                 VALUES(%s,%s,%s,%s,%s,%s)
             """, (APP_VERSION, from_version or None, action, status, backup_path or None, note or None))
+    finally:
+        conn.close()
 
 
 def verify_manifest():

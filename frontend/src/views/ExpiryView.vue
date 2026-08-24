@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { ArrowUpDown } from 'lucide-vue-next'
+import { ArrowUpDown, Download } from 'lucide-vue-next'
 import { useRoute } from 'vue-router'
 import FilterBar from '../components/FilterBar.vue'
 import { useFilterStore } from '../stores/filter'
 import { fetchDashboardOptions } from '../api/dashboard'
 import { fetchExpiryBatches } from '../api/analysis'
+import { exportExpiryBatches } from '../api/exports'
 
 const f=useFilterStore()
 const route=useRoute()
@@ -13,6 +14,7 @@ const localProductSearch=ref(String(route.query.sku||''))
 const data=ref(null),error=ref(''),loading=ref(false)
 const shopOptions=ref([]),warehouseOptions=ref([])
 const statuses=ref([]),daysMin=ref(''),daysMax=ref(''),pctMin=ref(''),pctMax=ref('')
+const exporting=ref(false),exportError=ref(''),lastExportCount=ref(null)
 let timer=null,serial=0
 const sort=ref({key:'remaining_days',dir:'asc'})
 const rows=computed(()=>sortRows(data.value?.rows||[],sort.value)),summary=computed(()=>data.value?.summary||{})
@@ -34,6 +36,21 @@ async function load(){
   finally{if(id===serial)loading.value=false}
 }
 function schedule(){clearTimeout(timer);timer=setTimeout(load,260)}
+async function downloadFiltered(){
+  exporting.value=true;exportError.value=''
+  try{
+    const r=await exportExpiryBatches({
+      departmentCode:f.departmentCode,
+      warehouses:f.warehouses,productSearch:localProductSearch.value||f.productSearch,
+      includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,
+      statuses:statuses.value,
+      remainingDaysMin:daysMin.value,remainingDaysMax:daysMax.value,
+      remainingPctMin:pctMin.value,remainingPctMax:pctMax.value,
+    })
+    lastExportCount.value=r.rowCount
+  }catch(e){exportError.value=e.message}
+  finally{exporting.value=false}
+}
 watch(()=>[JSON.stringify(f.warehouses),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),localProductSearch.value],schedule)
 watch(()=>[daysMin.value,daysMax.value,pctMin.value,pctMax.value],schedule)
 onMounted(async()=>{const qs=String(route.query.status||'');if(statusList.includes(qs))statuses.value=[qs];await loadOptions();await load()})
@@ -61,7 +78,8 @@ onMounted(async()=>{const qs=String(route.query.status||'');if(statusList.includ
         <button class="rank-tab" @click="statuses=[];daysMin='';daysMax='';pctMin='';pctMax='';load()">清除效期筛选</button>
       </section>
 
-      <section class="data-scope-bar"><span>库存快照：<b>{{ data.meta?.latest_inventory_date || '—' }}</b></span><span>筛选后批次：<b>{{ n(data.filtered_count) }}</b></span><span>{{ data.meta?.long_term_note }}</span></section>
+      <section class="data-scope-bar"><span>库存快照：<b>{{ data.meta?.latest_inventory_date || '—' }}</b></span><span>筛选后批次：<b>{{ n(data.filtered_count) }}</b></span><span>{{ data.meta?.long_term_note }}</span><button class="rank-tab" :disabled="exporting" @click="downloadFiltered"><Download :size="14" /> {{ exporting?'正在生成…':`下载当前筛选结果${lastExportCount!=null?'（'+lastExportCount+'条）':''}` }}</button></section>
+      <div v-if="exportError" class="api-error compact"><span>{{ exportError }}</span></div>
 
       <section class="panel table-wrap">
         <table class="expiry-table-real">

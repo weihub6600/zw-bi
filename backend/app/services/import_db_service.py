@@ -25,6 +25,48 @@ class RollbackConflictError(RuntimeError):
     pass
 
 
+class SystemImportError(RuntimeError):
+    """系统级导入错误（数据库结构缺失、连接异常等），应立即终止整批导入并回滚。"""
+
+    def __init__(self, message: str, *, error_code: str = "DATABASE_SCHEMA_MISSING", detail: str = ""):
+        super().__init__(message)
+        self.error_code = error_code
+        self.detail = detail
+
+
+_SYSTEM_ERROR_CODES = {1146, 1054, 1142, 1143, 1044, 1045, 1049, 2013, 2006, 0}
+
+
+def _is_system_level_error(exc: Exception) -> bool:
+    """判断异常是否为系统级错误（表/列缺失、连接异常、schema 不一致）。
+
+    这类错误不允许按行级数据错误继续处理，应立即终止整批导入。
+    """
+    # 数据库驱动底层错误码
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        code = None
+        try:
+            code = int(orig.args[0])
+        except (TypeError, ValueError, IndexError, AttributeError):
+            code = None
+        if code in _SYSTEM_ERROR_CODES:
+            return True
+    # SQLAlchemy 已包装的错误类别
+    class_name = type(exc).__name__
+    if class_name in {"ProgrammingError", "OperationalError", "InternalError"}:
+        return True
+    if class_name in {"OperationalError", "InterfaceError", "DatabaseError"}:
+        return True
+    # 信息性提示：schema 不一致
+    msg = str(exc)
+    if "doesn't exist" in msg or "Unknown column" in msg or "Unknown table" in msg:
+        return True
+    if "syntax error" in msg.lower() and "sql" in msg.lower():
+        return True
+    return False
+
+
 def _batch_no(data_type: str, business_date: date | None) -> str:
     day = (business_date or date.today()).strftime("%Y%m%d")
     stamp = datetime.now().strftime("%H%M%S%f")
@@ -121,6 +163,32 @@ def _snapshot_table(data_type: str) -> str:
     if data_type == "aging":
         return "aging_snapshot"
     raise ValueError("not a snapshot type")
+
+
+def _ensure_schema_tables(db: Session) -> None:
+    """系统级 schema 自检：导入流程依赖的核心表若缺失，立即终止，避免逐行产生重复系统错误。
+
+    表缺失属于数据库结构版本不完整（migration 未执行），不应被当作几百条行级数据错误。
+    """
+    required = {
+        "product_name_aliases": "商品名称聚合表（migration 0152）",
+        "import_changes": "回滚变更表",
+        "import_errors": "导入错误明细表",
+        "import_batches": "导入批次表",
+    }
+    for table, label in required.items():
+        dialect = db.get_bind().dialect.name if db.get_bind() else "mysql"
+        if dialect == "sqlite":
+            sql = text("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=:t")
+        else:
+            sql = text("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=:t")
+        exists = db.execute(sql, {"t": table}).scalar()
+        if not exists:
+            raise SystemImportError(
+                "数据库结构版本不完整，请联系管理员升级数据库。本次导入已终止。",
+                error_code="DATABASE_SCHEMA_MISSING",
+                detail=f"缺少表 {table}（{label}）。请执行数据库迁移：python scripts/release_tool.py migrate",
+            )
 
 
 def _prepare_sales_date_replace(
@@ -537,6 +605,8 @@ def import_parsed(
     errors = list(parsed.errors)
     warnings = list(parsed.warnings)
     success_rows = 0
+    # 系统级 schema 自检：核心依赖表缺失时立即终止，避免逐行产生重复系统错误。
+    _ensure_schema_tables(db)
     for row in parsed.rows:
         try:
             # 每一行使用 SAVEPOINT。某一行失败时只回滚该行，不污染整个导入批次。
@@ -550,8 +620,20 @@ def import_parsed(
                     _upsert_aging(db, batch_id, department["id"], product_id, row)
             success_rows += 1
         except ImportExecutionError as exc:
+            # 行级规则错误（日期/格式/商家识别等）：记录并允许继续处理其他行。
             errors.append(RowError(row_no=row.get("row_no"), code="ROW_IMPORT_RULE_FAILED", message=str(exc), raw_data=row))
+        except SystemImportError:
+            # 系统级错误：立即终止整批导入，交由外层回滚。
+            raise
         except Exception as exc:
+            if _is_system_level_error(exc):
+                # 数据库结构缺失/连接异常/schema 不一致：系统级错误，立即终止。
+                raise SystemImportError(
+                    f"数据库结构版本不完整，请联系管理员升级数据库。本次导入已终止。{exc}",
+                    error_code="DATABASE_SCHEMA_MISSING",
+                    detail=str(exc),
+                ) from exc
+            # 其他未知行级错误：记录并继续。
             errors.append(RowError(row_no=row.get("row_no"), code="ROW_IMPORT_FAILED", message=str(exc), raw_data=row))
 
     if parsed.data_type in {"inventory", "aging"} and errors:

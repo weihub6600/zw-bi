@@ -221,6 +221,31 @@ CREATE TABLE IF NOT EXISTS todo_tasks (
   KEY idx_todo_dept_status (department_id,status)
 );
 
+CREATE TABLE IF NOT EXISTS task_shops (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  task_id BIGINT NOT NULL,
+  shop_id BIGINT NOT NULL,
+  UNIQUE KEY uk_task_shop (task_id, shop_id),
+  KEY idx_task_shops_shop (shop_id),
+  CONSTRAINT fk_task_shops_task FOREIGN KEY (task_id) REFERENCES todo_tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_task_shops_shop FOREIGN KEY (shop_id) REFERENCES shops(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS task_warehouses (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  task_id BIGINT NOT NULL,
+  warehouse_id BIGINT NOT NULL,
+  UNIQUE KEY uk_task_warehouse (task_id, warehouse_id),
+  KEY idx_task_warehouses_warehouse (warehouse_id),
+  CONSTRAINT fk_task_warehouses_task FOREIGN KEY (task_id) REFERENCES todo_tasks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_task_warehouses_warehouse FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS task_no_sequences (
+  assign_date DATE PRIMARY KEY,
+  last_seq INT NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS expiry_rules (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   scope_type ENUM('global','department','product') NOT NULL,

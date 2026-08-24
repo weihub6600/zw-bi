@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from .auth_service import record_activity
@@ -96,13 +96,155 @@ def _resolve_named_dimension(db: Session, table: str, name: str | None) -> int |
     return int(row)
 
 
-def _next_task_no(db: Session, assign_date: date) -> str:
-    prefix = f"TD{assign_date.strftime('%Y%m%d')}"
-    count = db.execute(
-        text("SELECT COUNT(*) FROM todo_tasks WHERE task_no LIKE :prefix"),
-        {"prefix": prefix + "%"},
-    ).scalar_one()
-    return f"{prefix}-{int(count)+1:03d}"
+def _dimension_ids_in_department(db: Session, department_id: int, kind: str, ids: list[int]) -> set[int]:
+    """返回这些 shop/warehouse id 中，属于当前部门权限范围的有效 id 集合。
+
+    店铺/仓库只有出现在当前部门的业务数据中才认为可见，防止跨部门绑定。
+    """
+    if not ids:
+        return set()
+    if kind == "shops":
+        join_col, fk_col, fk_table = "shops", "shop_id", "shops"
+        # 店铺只出现在销量数据中
+        src = "sales_daily"
+        sql = text(
+            f"""
+            SELECT DISTINCT sd.{fk_col}
+            FROM {src} sd
+            JOIN {fk_table} {join_col} ON {join_col}.id=sd.{fk_col}
+            WHERE sd.department_id=:department_id AND sd.{fk_col} IN :ids
+            """
+        ).bindparams(bindparam("ids", expanding=True))
+    elif kind == "warehouses":
+        # 仓库综合销量/库存/库龄三张表
+        sql = text(
+            """
+            SELECT DISTINCT w.id
+            FROM warehouses w
+            WHERE w.id IN (
+                SELECT warehouse_id FROM sales_daily WHERE department_id=:department_id
+                UNION
+                SELECT warehouse_id FROM inventory_batch WHERE department_id=:department_id
+                UNION
+                SELECT warehouse_id FROM aging_snapshot WHERE department_id=:department_id
+            )
+              AND w.id IN :ids
+            """
+        ).bindparams(bindparam("ids", expanding=True))
+    else:
+        raise ValueError("非法维度")
+    rows = db.execute(sql, {"department_id": department_id, "ids": tuple(int(i) for i in ids)}).scalars().all()
+    return set(int(i) for i in rows)
+
+
+def _validate_task_dimensions(
+    db: Session,
+    department_id: int,
+    *,
+    shop_ids: list[int],
+    warehouse_ids: list[int],
+) -> tuple[list[int], list[int]]:
+    """校验 shop_ids / warehouse_ids 均在当前部门权限范围内，返回去重后的合法 id 列表。"""
+    valid_shops = _dimension_ids_in_department(db, department_id, "shops", shop_ids)
+    valid_whs = _dimension_ids_in_department(db, department_id, "warehouses", warehouse_ids)
+    unknown = [int(i) for i in shop_ids if int(i) not in valid_shops]
+    if unknown:
+        raise PermissionDenied(f"无权限的店铺：{unknown}")
+    unknown_wh = [int(i) for i in warehouse_ids if int(i) not in valid_whs]
+    if unknown_wh:
+        raise PermissionDenied(f"无权限的仓库：{unknown_wh}")
+    return sorted(valid_shops), sorted(valid_whs)
+
+
+def _write_task_dimensions(db: Session, task_id: int, shop_ids: list[int], warehouse_ids: list[int]) -> None:
+    """同步写入任务的多选店铺/仓库关联（先清空再写入，幂等）。
+
+    DELETE + INSERT 在 MySQL 与 SQLite 均可用，避免方言差异，且天然支持
+    编辑场景（增加/移除维度）的关联同步。
+    """
+    db.execute(text("DELETE FROM task_shops WHERE task_id=:task_id"), {"task_id": int(task_id)})
+    db.execute(text("DELETE FROM task_warehouses WHERE task_id=:task_id"), {"task_id": int(task_id)})
+    for shop_id in shop_ids:
+        db.execute(
+            text("INSERT INTO task_shops(task_id,shop_id) VALUES(:task_id,:shop_id)"),
+            {"task_id": int(task_id), "shop_id": int(shop_id)},
+        )
+    for warehouse_id in warehouse_ids:
+        db.execute(
+            text("INSERT INTO task_warehouses(task_id,warehouse_id) VALUES(:task_id,:warehouse_id)"),
+            {"task_id": int(task_id), "warehouse_id": int(warehouse_id)},
+        )
+
+
+def _historical_max_suffix(db: Session, assign_date: date) -> int:
+    """返回 todo_tasks 中该日期 task_no 的历史最大后缀（无则 0）。"""
+    prefix = f"TD{assign_date.strftime('%Y%m%d')}-%"
+    dialect = db.get_bind().dialect.name if db.get_bind() else "mysql"
+    if dialect == "mysql":
+        row = db.execute(
+            text(
+                "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(task_no, '-', -1) AS UNSIGNED)), 0) "
+                "FROM todo_tasks WHERE task_no LIKE :prefix"
+            ),
+            {"prefix": prefix},
+        ).scalar_one()
+        return int(row)
+    # SQLite：SUBSTRING_INDEX 不存在，用 Python 解析。
+    rows = db.execute(
+        text("SELECT task_no FROM todo_tasks WHERE task_no LIKE :prefix"),
+        {"prefix": prefix},
+    ).scalars().all()
+    best = 0
+    for t in rows:
+        try:
+            best = max(best, int(str(t).rsplit("-", 1)[-1]))
+        except (ValueError, IndexError):
+            continue
+    return best
+
+
+def _allocate_task_no(db: Session, assign_date: date) -> str:
+    """从持久化序列表 task_no_sequences 原子分配任务号。
+
+    删除任务不会回退编号，永不复用已使用过的任务号；多管理员并发创建不重复。
+    依赖 MySQL 的行锁 + LAST_INSERT_ID(expr) 原子递增；SQLite（测试）用行级回退。
+    若该日期 sequence 缺失，初始化值基于 todo_tasks 历史最大后缀，而非无条件从 1 开始。
+    """
+    dialect = db.get_bind().dialect.name if db.get_bind() else "mysql"
+    if dialect == "mysql":
+        db.execute(
+            text(
+                """
+                INSERT INTO task_no_sequences(assign_date, last_seq)
+                SELECT :d, LAST_INSERT_ID(
+                    COALESCE(MAX(CAST(SUBSTRING_INDEX(task_no, '-', -1) AS UNSIGNED)), 0) + 1
+                )
+                FROM todo_tasks WHERE task_no LIKE :prefix
+                ON DUPLICATE KEY UPDATE last_seq = LAST_INSERT_ID(last_seq + 1)
+                """
+            ),
+            {"d": assign_date, "prefix": f"TD{assign_date.strftime('%Y%m%d')}-%"},
+        )
+        seq = db.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
+    else:
+        # SQLite 测试环境：读取 + 更新（单线程测试足够）。
+        row = db.execute(
+            text("SELECT last_seq FROM task_no_sequences WHERE assign_date=:d"),
+            {"d": assign_date},
+        ).scalar_one_or_none()
+        if row is None:
+            seq = _historical_max_suffix(db, assign_date) + 1
+            db.execute(
+                text("INSERT INTO task_no_sequences(assign_date, last_seq) VALUES(:d, :seq)"),
+                {"d": assign_date, "seq": seq},
+            )
+        else:
+            seq = int(row) + 1
+            db.execute(
+                text("UPDATE task_no_sequences SET last_seq=:seq WHERE assign_date=:d"),
+                {"d": assign_date, "seq": seq},
+            )
+    return f"TD{assign_date.strftime('%Y%m%d')}-{int(seq):03d}"
 
 
 def _assert_can_assign(
@@ -125,6 +267,44 @@ def _assert_can_assign(
         return
     if int(owner["id"]) != int(actor["id"]):
         raise PermissionDenied("普通用户只能给自己创建待办")
+
+
+def list_task_dimensions(db: Session, actor_user_id: str, department_code: str) -> dict[str, Any]:
+    """返回当前部门权限范围内可选的店铺/仓库（id + name），供前端多选组件使用。"""
+    actor, department = assert_can_view_department(db, actor_user_id, department_code)
+    department_id = int(department["id"])
+    shops = db.execute(
+        text(
+            """
+            SELECT DISTINCT s.id, s.source_name
+            FROM sales_daily sd JOIN shops s ON s.id=sd.shop_id
+            WHERE sd.department_id=:department_id
+            ORDER BY s.source_name
+            """
+        ),
+        {"department_id": department_id},
+    ).all()
+    warehouses = db.execute(
+        text(
+            """
+            SELECT DISTINCT w.id, w.source_name
+            FROM warehouses w
+            WHERE w.id IN (
+                SELECT warehouse_id FROM sales_daily WHERE department_id=:department_id
+                UNION
+                SELECT warehouse_id FROM inventory_batch WHERE department_id=:department_id
+                UNION
+                SELECT warehouse_id FROM aging_snapshot WHERE department_id=:department_id
+            )
+            ORDER BY w.source_name
+            """
+        ),
+        {"department_id": department_id},
+    ).all()
+    return {
+        "shops": [{"id": int(r[0]), "name": (r[1] or f"店铺#{int(r[0])}")} for r in shops],
+        "warehouses": [{"id": int(r[0]), "name": (r[1] or f"仓库#{int(r[0])}")} for r in warehouses],
+    }
 
 
 def list_assignees(db: Session, actor_user_id: str, department_code: str) -> dict[str, Any]:
@@ -167,6 +347,8 @@ def create_task(
     manager_note: str,
     shop_name: str | None = None,
     warehouse_name: str | None = None,
+    shop_ids: list[int] | None = None,
+    warehouse_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     department_id = int(department["id"])
@@ -174,10 +356,21 @@ def create_task(
     owner = _resolve_user(db, owner_user_id)
     _assert_can_assign(db, actor, actor_role, department_id, owner)
     product = _resolve_product(db, merchant_code)
-    shop_id = _resolve_named_dimension(db, "shops", shop_name)
-    warehouse_id = _resolve_named_dimension(db, "warehouses", warehouse_name)
+    # 多选维度：优先用 shop_ids/warehouse_ids；兼容旧的单值 shop_name/warehouse_name。
+    if not shop_ids:
+        shop_id = _resolve_named_dimension(db, "shops", shop_name)
+        shop_ids = [shop_id] if shop_id else []
+    if not warehouse_ids:
+        warehouse_id = _resolve_named_dimension(db, "warehouses", warehouse_name)
+        warehouse_ids = [warehouse_id] if warehouse_id else []
+    valid_shops, valid_whs = _validate_task_dimensions(
+        db, department_id, shop_ids=shop_ids, warehouse_ids=warehouse_ids,
+    )
+    shop_id = valid_shops[0] if valid_shops else None
+    warehouse_id = valid_whs[0] if valid_whs else None
     start = task_start_date(assign_date)
-    task_no = _next_task_no(db, assign_date)
+    # task_no 由持久化序列表原子分配，删除任务不回退、永不复用、并发不重复。
+    task_no = _allocate_task_no(db, assign_date)
     db.execute(
         text(
             """
@@ -213,6 +406,9 @@ def create_task(
         ),
         {"user_pk": actor["id"], "department_id": department_id, "task_no": task_no, "owner_user_id": owner_user_id, "sku": merchant_code},
     )
+    # 写入多选关联（shop_ids / warehouse_ids）
+    task_row = db.execute(text("SELECT id FROM todo_tasks WHERE task_no=:task_no"), {"task_no": task_no}).scalar_one()
+    _write_task_dimensions(db, int(task_row), valid_shops, valid_whs)
     db.commit()
     return {"created": True, "task_no": task_no, "start_date": start.isoformat()}
 
@@ -248,12 +444,19 @@ def _task_metrics(db: Session, task: dict[str, Any]) -> dict[str, Any]:
         "d7": task_window_end(start, 7), "d14": task_window_end(start, 14), "d30": task_window_end(start, 30),
     }
     clauses = []
-    if task.get("shop_id"):
-        params["shop_id"] = task["shop_id"]
-        clauses.append("sd.shop_id=:shop_id")
-    if task.get("warehouse_id"):
-        params["warehouse_id"] = task["warehouse_id"]
-        clauses.append("sd.warehouse_id=:warehouse_id")
+    shop_ids = task.get("shop_ids") or []
+    warehouse_ids = task.get("warehouse_ids") or []
+    # 向后兼容：未读关联表时回退到旧单值字段。
+    if not shop_ids and task.get("shop_id"):
+        shop_ids = [task["shop_id"]]
+    if not warehouse_ids and task.get("warehouse_id"):
+        warehouse_ids = [task["warehouse_id"]]
+    if shop_ids:
+        params["shop_ids"] = tuple(int(i) for i in shop_ids)
+        clauses.append("sd.shop_id IN :shop_ids")
+    if warehouse_ids:
+        params["warehouse_ids"] = tuple(int(i) for i in warehouse_ids)
+        clauses.append("sd.warehouse_id IN :warehouse_ids")
     extra = (" AND " + " AND ".join(clauses)) if clauses else ""
     row = db.execute(
         text(
@@ -275,7 +478,7 @@ def _task_metrics(db: Session, task: dict[str, Any]) -> dict[str, Any]:
             """
         ), params,
     ).mappings().one()
-    single_shop = bool(task.get("shop_id"))
+    single_shop = bool(shop_ids)
     def price(rev, qty):
         q = _number(qty)
         return round(_number(rev)/q, 2) if single_shop and q > 0 else None
@@ -293,6 +496,43 @@ def _task_metrics(db: Session, task: dict[str, Any]) -> dict[str, Any]:
             "30d": task_window_complete(start, 30, latest),
         },
     }
+
+
+def _task_dimensions(db: Session, task_ids: list[int]) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+    """批量读取任务的多选店铺/仓库 id（task_shops / task_warehouses）。"""
+    if not task_ids:
+        return {}, {}
+    shops: dict[int, list[int]] = {}
+    warehouses: dict[int, list[int]] = {}
+    ids_param = {"ids": tuple(int(i) for i in task_ids)}
+    try:
+        for row in db.execute(
+            text("SELECT task_id,shop_id FROM task_shops WHERE task_id IN :ids").bindparams(bindparam("ids", expanding=True)),
+            ids_param,
+        ).all():
+            shops.setdefault(int(row[0]), []).append(int(row[1]))
+        for row in db.execute(
+            text("SELECT task_id,warehouse_id FROM task_warehouses WHERE task_id IN :ids").bindparams(bindparam("ids", expanding=True)),
+            ids_param,
+        ).all():
+            warehouses.setdefault(int(row[0]), []).append(int(row[1]))
+    except Exception:
+        pass
+    return shops, warehouses
+
+
+def _dimension_names(db: Session, kind: str, ids: list[int]) -> dict[int, str]:
+    if not ids:
+        return {}
+    table = "shops" if kind == "shops" else "warehouses"
+    try:
+        rows = db.execute(
+            text(f"SELECT id,source_name FROM {table} WHERE id IN :ids").bindparams(bindparam("ids", expanding=True)),
+            {"ids": tuple(int(i) for i in ids)},
+        ).all()
+        return {int(r[0]): r[1] for r in rows}
+    except Exception:
+        return {}
 
 
 def _task_base_rows(db: Session, department_id: int, where_sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -322,7 +562,23 @@ def _task_base_rows(db: Session, department_id: int, where_sql: str, params: dic
         ),
         {"department_id": department_id, **params},
     ).mappings().all()
-    return [dict(r) for r in rows]
+    tasks = [dict(r) for r in rows]
+    # 批量填充多选维度 id（task_shops / task_warehouses），缺失时回退旧单值字段。
+    task_ids = [int(t["id"]) for t in tasks]
+    shop_map, wh_map = _task_dimensions(db, task_ids)
+    all_shop_ids = sorted({sid for ids in shop_map.values() for sid in ids} | {int(t["shop_id"]) for t in tasks if t.get("shop_id")})
+    all_wh_ids = sorted({wid for ids in wh_map.values() for wid in ids} | {int(t["warehouse_id"]) for t in tasks if t.get("warehouse_id")})
+    shop_names = _dimension_names(db, "shops", all_shop_ids)
+    wh_names = _dimension_names(db, "warehouses", all_wh_ids)
+    for t in tasks:
+        tid = int(t["id"])
+        sids = shop_map.get(tid) or ([int(t["shop_id"])] if t.get("shop_id") else [])
+        wids = wh_map.get(tid) or ([int(t["warehouse_id"])] if t.get("warehouse_id") else [])
+        t["shop_ids"] = sids
+        t["warehouse_ids"] = wids
+        t["_shops"] = [{"id": sid, "name": shop_names.get(sid, "")} for sid in sids]
+        t["_warehouses"] = [{"id": wid, "name": wh_names.get(wid, "")} for wid in wids]
+    return tasks
 
 
 def list_tasks(
@@ -376,6 +632,8 @@ def list_tasks(
             "owner": {"user_id": task["owner_user_id"], "username": task["owner_name"]},
             "creator": {"user_id": task["creator_user_id"], "username": task["creator_name"]},
             "shop_name": task["shop_name"], "warehouse_name": task["warehouse_name"],
+            "shop_ids": task.get("shop_ids") or [], "warehouse_ids": task.get("warehouse_ids") or [],
+            "shops": task.get("_shops") or [], "warehouses": task.get("_warehouses") or [],
             "target_qty": _round(task["target_qty"], 2) if task["target_qty"] is not None else None,
             "assign_date": _date_text(task["assign_date"]), "start_date": _date_text(task["start_date"]),
             "manager_note": task["manager_note"] or "", "owner_note": task["owner_note"] or "", "status": task["status"],

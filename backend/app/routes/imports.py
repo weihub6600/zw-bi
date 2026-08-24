@@ -18,6 +18,7 @@ from ..services.import_db_service import (
     DuplicateImportError,
     ImportExecutionError,
     RollbackConflictError,
+    SystemImportError,
     import_batch_detail,
     import_batch_issues,
     import_file,
@@ -62,6 +63,16 @@ def _save_upload(upload: UploadFile) -> str:
 def _handle_error(exc: Exception) -> None:
     if isinstance(exc, (PermissionDenied, ActorNotFound)):
         raise HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, SystemImportError):
+        # 系统级错误（如数据库缺表）：返回友好信息与错误码，不逐行重复展示底层 traceback。
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": exc.error_code,
+                "message": "销量导入失败：数据库结构版本不完整，请联系管理员升级数据库。本次导入已终止。",
+                "detail": exc.detail or str(exc),
+            },
+        )
     if isinstance(exc, ImportValidationError):
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message})
     if isinstance(exc, DuplicateImportError):

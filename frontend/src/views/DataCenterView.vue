@@ -10,9 +10,23 @@ import {
 } from '../api/imports'
 
 import { useAuthStore } from '../stores/auth'
+import DataDownloadPanel from '../components/DataDownloadPanel.vue'
 const auth = useAuthStore()
 const departmentCode = computed(() => auth.departmentCode || 'B2C')
-const activeTab = ref('import')
+const canImport = computed(() => Boolean(auth.capabilities.can_import))
+const canDownload = computed(() => Boolean(auth.capabilities.can_download_data))
+const visibleTabs = computed(() => {
+  const tabs = []
+  if (canImport.value) {
+    tabs.push({ key: 'import', label: '数据导入', icon: 'upload' })
+    tabs.push({ key: 'records', label: '导入记录', icon: 'history' })
+    tabs.push({ key: 'quality', label: '数据质量', icon: 'alert' })
+  }
+  tabs.push({ key: 'download', label: '数据下载', icon: 'download' })
+  tabs.push({ key: 'templates', label: '模板下载', icon: 'tpl' })
+  return tabs
+})
+const activeTab = ref(canImport.value ? 'import' : 'download')
 const dataType = ref('sales')
 const businessDate = ref('2026-08-19')
 const selectedFile = ref(null)
@@ -167,7 +181,13 @@ async function runCommit(){
     } else {
       activeTab.value='records'
     }
-  } catch (e) { errorMessage.value=e.message }
+  } catch (e) {
+    if (e.code === 'DATABASE_SCHEMA_MISSING') {
+      errorMessage.value = '销量导入失败：数据库结构版本不完整，请联系管理员升级数据库。本次导入已终止。\n错误代码：DATABASE_SCHEMA_MISSING'
+    } else {
+      errorMessage.value = e.message
+    }
+  }
   finally { commitLoading.value=false }
 }
 
@@ -256,10 +276,10 @@ async function notifyLatestDateChanged(){
 
 watch([dataType,businessDate,departmentCode], invalidatePreview)
 watch(qualitySeverity, loadQualityIssues)
-watch(activeTab, tab => { if (tab==='records') loadRecords(); if (tab==='quality') { if (qualityBatchNo.value) loadQualityIssues(); loadProductAliases() } })
+watch(activeTab, tab => { if (canImport.value && tab==='records') loadRecords(); if (canImport.value && tab==='quality') { if (qualityBatchNo.value) loadQualityIssues(); loadProductAliases() } })
 
 onMounted(async()=>{
-  await loadRecords()
+  if (canImport.value) await loadRecords()
 })
 </script>
 
@@ -277,10 +297,14 @@ onMounted(async()=>{
     <div v-if="errorMessage" class="dc-alert error"><XCircle :size="18" /><span>{{ errorMessage }}</span><button @click="errorMessage=''">关闭</button></div>
 
     <div class="dc-tabs">
-      <button :class="['dc-tab',{active:activeTab==='import'}]" @click="activeTab='import'"><UploadCloud :size="16" /> 数据导入</button>
-      <button :class="['dc-tab',{active:activeTab==='records'}]" @click="activeTab='records'"><History :size="16" /> 导入记录</button>
-      <button :class="['dc-tab',{active:activeTab==='quality'}]" @click="activeTab='quality'"><AlertTriangle :size="16" /> 数据质量</button>
-      <button :class="['dc-tab',{active:activeTab==='templates'}]" @click="activeTab='templates'"><Download :size="16" /> 模板下载</button>
+      <button v-for="tab in visibleTabs" :key="tab.key" :class="['dc-tab',{active:activeTab===tab.key}]" @click="activeTab=tab.key">
+        <UploadCloud v-if="tab.icon==='upload'" :size="16" />
+        <History v-else-if="tab.icon==='history'" :size="16" />
+        <AlertTriangle v-else-if="tab.icon==='alert'" :size="16" />
+        <Download v-else-if="tab.icon==='download'" :size="16" />
+        <FileSpreadsheet v-else-if="tab.icon==='tpl'" :size="16" />
+        {{ tab.label }}
+      </button>
     </div>
 
     <template v-if="activeTab==='import'">
@@ -449,6 +473,10 @@ onMounted(async()=>{
           <div v-else-if="!qualityIssues.length" class="dc-empty">当前筛选下没有问题记录。</div>
         </div>
       </section>
+    </template>
+
+    <template v-if="activeTab==='download'">
+      <DataDownloadPanel />
     </template>
 
     <template v-if="activeTab==='templates'">
