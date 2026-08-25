@@ -39,7 +39,7 @@
     "backend/app/services/permission_service.py": "01bfe4ab02aeaebd8e500cafee58fbe672cfd040c7e54bac0cc75a32b26c80ea",
     "backend/app/services/preset_service.py": "33b1e50341463d6ca1f3dc476f2f9f13af90f487c3025f4afa8e1dffd6bb1c56",
     "backend/app/services/setup_service.py": "40c77a959a45fa73c61917f774c5d57b84f1f01577a92808189b1d6af839fe22",
-    "backend/app/services/task_crud_service.py": "166a1f4b3d8c5375c36c3d6331a017df4fdee39eab2be71b35295a8935fdc141",
+    "backend/app/services/task_crud_service.py": "924d6cb6d6085ed23140c5c7667833120ee0d87915dbb0d6e96076aecbcb02a6",
     "backend/app/services/task_service.py": "e3c42a9a0e3ba0503266266b78b928a54f411f42b08c631fb60d894c6ede9d95",
     "backend/app/version.py": "46038958c1e3aeacd51a0b5f2cdb83f351337a420f4b4264048344e0aec0116b",
     "backend/sql/migrations/0141_import_pipeline.sql": "bcfa8752b914b61ca7844d49a061ac42c41508f4444b86d671097b88e7cc1bcb",
