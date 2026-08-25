@@ -31,6 +31,7 @@ class DashboardScope:
     include_name: str = ""
     exclude_name: str = ""
     product_codes: tuple[str, ...] = ()
+    product_category_ids: tuple[int, ...] = ()
 
     @property
     def single_shop(self) -> bool:
@@ -220,7 +221,24 @@ def _scope_clauses(
             key = f"product_code_{i}"
             params[key] = code
             placeholders.append(f":{key}")
-        clauses.append(f"{product_alias}.merchant_code IN ({','.join(placeholders)})")
+        clauses.append(
+            f"{product_alias}.merchant_code IN ({','.join(placeholders)})"
+        )
+
+    if scope.product_category_ids:
+        placeholders = []
+        for i, category_id in enumerate(scope.product_category_ids):
+            key = f"product_category_id_{i}"
+            params[key] = int(category_id)
+            placeholders.append(f":{key}")
+
+        clauses.append(
+            "EXISTS ("
+            "SELECT 1 FROM product_category_relations pcr "
+            f"WHERE pcr.product_id={product_alias}.id "
+            f"AND pcr.category_id IN ({','.join(placeholders)})"
+            ")"
+        )
 
     includes = [x.lower() for x in parse_keywords(scope.include_name)]
     if includes:
@@ -725,10 +743,56 @@ def get_filter_options(db: Session, scope: DashboardScope) -> dict[str, Any]:
             {"department_id": department_id},
         ).all()
     ]
+    product_categories = [
+        {
+            "id": int(r["id"]),
+            "name": r["category_name"],
+        }
+        for r in db.execute(
+            text(
+                """
+                SELECT DISTINCT pc.id, pc.category_name
+                FROM product_categories pc
+                JOIN product_category_relations pcr
+                  ON pcr.category_id=pc.id
+                WHERE
+                  EXISTS(
+                    SELECT 1
+                    FROM sales_daily sd
+                    WHERE sd.department_id=:department_id
+                      AND sd.product_id=pcr.product_id
+                  )
+                  OR EXISTS(
+                    SELECT 1
+                    FROM inventory_batch ib
+                    WHERE ib.department_id=:department_id
+                      AND ib.product_id=pcr.product_id
+                  )
+                  OR EXISTS(
+                    SELECT 1
+                    FROM aging_snapshot ag
+                    WHERE ag.department_id=:department_id
+                      AND ag.product_id=pcr.product_id
+                  )
+                  OR EXISTS(
+                    SELECT 1
+                    FROM products p
+                    JOIN import_batches b ON b.id=p.import_batch_id
+                    WHERE p.id=pcr.product_id
+                      AND b.department_id=:department_id
+                  )
+                ORDER BY pc.category_name
+                """
+            ),
+            {"department_id": department_id},
+        ).mappings().all()
+    ]
+
     return {
         "department": {"code": department["code"], "name": department["name"]},
         "shops": shops,
         "warehouses": warehouses,
+        "product_categories": product_categories,
     }
 
 

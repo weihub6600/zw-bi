@@ -9,7 +9,12 @@ import {
 } from 'lucide-vue-next'
 import { useFilterStore } from '../stores/filter'
 import {
-  fetchExpiryBatches, fetchInventoryAnalysis, fetchProductDetail, saveProductNote, searchProducts
+  fetchExpiryBatches,
+  fetchInventoryAnalysis,
+  fetchProductDetail,
+  saveProductNote,
+  searchProducts,
+  fetchProductCategories
 } from '../api/analysis'
 
 const route=useRoute(),router=useRouter(),f=useFilterStore()
@@ -17,6 +22,8 @@ const data=ref(null),error=ref(''),loading=ref(false),note=ref(''),noteState=ref
 const listRows=ref([]),listTitle=ref('')
 const chartEl=ref(null),shopChartEl=ref(null);let chart=null,shopChart=null,serial=0,searchTimer=null
 const searchText=ref(''),searchRows=ref([]),searchLoading=ref(false),searchOpen=ref(false),searchError=ref('')
+const productCategoryId=ref(null)
+const productCategories=ref([])
 const shopSort=ref({key:'sales30',dir:'desc'}),expirySort=ref({key:'remaining_days',dir:'asc'})
 const sku=computed(()=>String(route.query.sku||'').trim())
 const stockCategory=computed(()=>String(route.query.stock_category||'').trim())
@@ -52,7 +59,14 @@ async function runSearch(value=searchText.value){
   const q=String(value||'').trim();searchError.value=''
   if(!q){searchRows.value=[];searchOpen.value=false;return}
   searchLoading.value=true
-  try{const r=await searchProducts(q,{limit:20});searchRows.value=r.rows||[];searchOpen.value=true}
+  try{
+  const r=await searchProducts(q,{
+    limit:20,
+    categoryId:productCategoryId.value
+  })
+  searchRows.value=r.rows||[]
+  searchOpen.value=true
+}
   catch(e){searchRows.value=[];searchOpen.value=true;searchError.value=e.message}
   finally{searchLoading.value=false}
 }
@@ -106,9 +120,21 @@ function renderCharts(){
 }
 function onResize(){chart?.resize();shopChart?.resize()}
 watch(searchText,scheduleSearch)
+watch(productCategoryId,()=>{
+  if(searchText.value.trim()) runSearch()
+})
 watch(()=>[sku.value,stockCategory.value,expiryStatus.value],load)
 watch(()=>[f.dateRange,f.customStart,f.customEnd,JSON.stringify(f.shops),JSON.stringify(f.warehouses)],load)
-onMounted(()=>{window.addEventListener('resize',onResize);load()})
+onMounted(async()=>{
+  window.addEventListener('resize',onResize)
+  try{
+    productCategories.value=await fetchProductCategories()
+  }catch(e){
+    console.error('加载商品分类失败',e)
+    productCategories.value=[]
+  }
+  load()
+})
 onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resize',onResize);chart?.dispose();shopChart?.dispose();chart=null;shopChart=null})
 </script>
 
@@ -122,16 +148,34 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
       <button v-if="sku" class="ui-btn ui-btn-primary" @click.stop="router.push({path:'/todo',query:{create:'1',sku,shop:f.shops.length===1?f.shops[0]:'',warehouse:f.warehouses.length===1?f.warehouses[0]:''}})"><ClipboardPlus :size="16"/>生成待办</button>
     </div>
 
-    <section class="product-search-shell" @click.stop>
-      <div class="product-search-leading"><Search :size="20"/></div>
-      <input v-model="searchText" autocomplete="off" placeholder="输入商家编码、商品名称或历史商品名，直接搜索…" @focus="searchText&&runSearch()" @keyup.enter="searchEnter"/>
+<section class="product-search-shell" @click.stop>
+  <div class="product-search-leading"><Search :size="20"/></div>
+
+  <select v-model="productCategoryId" class="product-category-select">
+    <option :value="null">全部商品分类</option>
+    <option
+      v-for="c in productCategories"
+      :key="c.id"
+      :value="c.id"
+    >
+      {{ c.name }}
+    </option>
+  </select>
+
+  <input
+    v-model="searchText"
+    autocomplete="off"
+    placeholder="输入商家编码或商品名称，直接搜索…"
+    @focus="searchText&&runSearch()"
+    @keyup.enter="searchEnter"
+  />
       <div v-if="searchLoading" class="product-search-state">搜索中…</div>
       <div v-else-if="selectedProductLabel&&!searchText" class="product-search-selected">当前：{{ selectedProductLabel }}</div>
       <div v-if="searchOpen" class="product-search-results">
         <div v-if="searchError" class="product-search-empty">{{ searchError }}</div>
         <button v-for="row in searchRows" :key="row.sku" class="product-search-result" @click="selectProduct(row)">
           <span class="product-result-icon"><Boxes :size="17"/></span>
-          <span class="product-result-main"><b>{{ row.name }}</b><small>{{ row.sku }}<template v-if="row.spec"> · {{ row.spec }}</template></small><em v-if="row.matched_aliases">曾用名：{{ row.matched_aliases }}</em></span>
+          <span class="product-result-main"><b>{{ row.name }}</b><small>{{ row.sku }}<template v-if="row.spec"> · {{ row.spec }}</template></small></span>
           <ChevronRight :size="17"/>
         </button>
         <div v-if="!searchLoading&&!searchError&&!searchRows.length" class="product-search-empty">没有找到匹配商品</div>
@@ -195,7 +239,12 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
 
       <section class="panel shop-sales-panel shop-sales-v154">
         <div class="section-head"><div><h3>各店铺销量贡献</h3><span>同一商品按店铺拆分销售贡献；库存不伪造店铺维度</span></div><b>{{ data.shop_sales?.length||0 }} 个店铺</b></div>
-        <div class="shop-sales-layout"><div ref="shopChartEl" class="shop-sales-chart"></div><div class="table-wrap shop-sales-table-wrap"><table class="sortable-table"><thead><tr><th>店铺</th><th><button @click="toggleSort(shopSort,'sales7')">7天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales7') }}</button></th><th><button @click="toggleSort(shopSort,'sales14')">14天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales14') }}</button></th><th><button @click="toggleSort(shopSort,'sales30')">30天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales30') }}</button></th><th><button @click="toggleSort(shopSort,'share30_pct')">30天占比 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'share30_pct') }}</button></th></tr></thead><tbody><tr v-for="r in sortedShopSales" :key="r.shop"><td><b>{{ r.shop }}</b></td><td>{{ n(r.sales7) }}</td><td>{{ n(r.sales14) }}</td><td><b>{{ n(r.sales30) }}</b></td><td>{{ n(r.share30_pct,1) }}%</td></tr><tr v-if="!sortedShopSales.length"><td colspan="5" class="table-empty">该商品当前没有店铺销量。</td></tr></tbody></table></div></div>
+        <div class="shop-sales-layout"><div ref="shopChartEl" class="shop-sales-chart"></div><div class="table-wrap shop-sales-table-wrap"><table class="sortable-table"><thead><tr><th>店铺</th><th><button @click="toggleSort(shopSort,'sales7')">7天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales7') }}</button></th><th><button @click="toggleSort(shopSort,'sales14')">14天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales14') }}</button></th><th><button @click="toggleSort(shopSort,'sales30')">30天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales30') }}</button></th><th><button @click="toggleSort(shopSort,'share30_pct')">30天占比 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'share30_pct') }}</button></th></tr></thead><tbody><tr
+  v-for="r in sortedShopSales"
+  :key="r.shop"
+  class="shop-drill-row"
+  @click="drillToShop(r)"
+><td><b>{{ r.shop }}</b></td><td>{{ n(r.sales7) }}</td><td>{{ n(r.sales14) }}</td><td><b>{{ n(r.sales30) }}</b></td><td>{{ n(r.share30_pct,1) }}%</td></tr><tr v-if="!sortedShopSales.length"><td colspan="5" class="table-empty">该商品当前没有店铺销量。</td></tr></tbody></table></div></div>
       </section>
 
       <section class="panel table-wrap expiry-table-v154">

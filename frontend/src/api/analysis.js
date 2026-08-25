@@ -5,4 +5,19 @@ export function fetchExpiryBatches(options={}){const params=common(options);dele
 export const fetchProductDetail=(sku,options={})=>apiRequest(`/api/analysis/products/${encodeURIComponent(sku)}`,{params:{department_code:currentDepartmentCode(options.departmentCode),days:options.days||30,start_date:options.startDate||undefined,end_date:options.endDate||undefined,shops:options.shops||[],warehouses:options.warehouses||[]}})
 export const saveProductNote=(sku,note,{departmentCode=''}={})=>apiRequest(`/api/analysis/products/${encodeURIComponent(sku)}/note`,{method:'PUT',params:{department_code:currentDepartmentCode(departmentCode)},body:{note}})
 
-export const searchProducts=(q,{departmentCode='',limit=20}={})=>apiRequest('/api/analysis/products/search',{params:{q,department_code:currentDepartmentCode(departmentCode),limit}})
+export const searchProducts=(q,{departmentCode='',limit=20,categoryId=null}={})=>
+  apiRequest('/api/analysis/products/search',{
+    params:{
+      q,
+      department_code:currentDepartmentCode(departmentCode),
+      limit,
+      category_id:categoryId||undefined
+    }
+  })
+
+export const fetchProductCategories=()=>apiRequest(
+  '/api/analysis/product-categories',
+  {
+    params:{}
+  }
+)

@@ -108,7 +108,55 @@ def _find_or_create_named_dimension(db: Session, table_name: str, name: str) -> 
     result = db.execute(text(f"INSERT INTO {table_name}(source_name) VALUES(:name)"), {"name": name})
     return int(result.lastrowid)
 
+def _sync_product_categories(
+    db: Session,
+    product_id: int,
+    category_text: str | None,
+):
+    if not category_text:
+        return
 
+    names = [
+        x.strip()
+        for x in str(category_text)
+        .replace("，", ",")
+        .split(",")
+        if x.strip()
+    ]
+
+    for name in names:
+        row = db.execute(
+            text("""
+                SELECT id
+                FROM product_categories
+                WHERE category_name=:name
+            """),
+            {"name": name},
+        ).first()
+
+        if row:
+            category_id = row[0]
+        else:
+            result = db.execute(
+                text("""
+                    INSERT INTO product_categories(category_name)
+                    VALUES(:name)
+                """),
+                {"name": name},
+            )
+            category_id = result.lastrowid
+
+        db.execute(
+            text("""
+                INSERT IGNORE INTO product_category_relations
+                (product_id, category_id)
+                VALUES(:product_id,:category_id)
+            """),
+            {
+                "product_id": product_id,
+                "category_id": category_id,
+            },
+        )
 def _touch_product_alias(
     db: Session,
     product_id: int,
@@ -306,6 +354,11 @@ def _get_or_create_product(db: Session, batch_id: int, row: dict[str, Any], data
         },
     )
     product_id = int(result.lastrowid)
+    _sync_product_categories(
+    db,
+    product_id,
+    row.get("category"),
+    )
     _record_change(db, batch_id, "products", product_id, "inserted", None)
     _touch_product_alias(db, product_id, row["product_name"], status="accepted")
     return product_id

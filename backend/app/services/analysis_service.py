@@ -370,6 +370,7 @@ def search_products(
     query: str,
     *,
     limit: int = 20,
+    category_id: int | None = None,
 ) -> dict[str, Any]:
     """按商家编码、当前商品名、历史别名搜索；只返回当前部门实际存在过的数据商品。"""
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
@@ -388,31 +389,39 @@ def search_products(
                      WHEN LOWER(p.product_name)=:exact THEN 90
                      WHEN LOWER(p.merchant_code) LIKE :prefix THEN 80
                      WHEN LOWER(p.product_name) LIKE :prefix THEN 70
-                     WHEN LOWER(a.alias_name)=:exact THEN 65
-                     ELSE 50 END) AS score,
-                   GROUP_CONCAT(DISTINCT CASE WHEN LOWER(a.alias_name) LIKE :like THEN a.alias_name END
-                                ORDER BY a.last_seen_at DESC SEPARATOR ' · ') AS matched_aliases
+                     ELSE 50 END) AS score
             FROM products p
-            LEFT JOIN product_name_aliases a ON a.product_id=p.id
-            WHERE (LOWER(p.merchant_code) LIKE :like
+            WHERE (
+                   LOWER(p.merchant_code) LIKE :like
                    OR LOWER(p.product_name) LIKE :like
-                   OR LOWER(a.alias_name) LIKE :like)
+                   )
               AND (
                 EXISTS(SELECT 1 FROM sales_daily sd WHERE sd.department_id=:department_id AND sd.product_id=p.id)
                 OR EXISTS(SELECT 1 FROM inventory_batch ib WHERE ib.department_id=:department_id AND ib.product_id=p.id)
                 OR EXISTS(SELECT 1 FROM aging_snapshot ag WHERE ag.department_id=:department_id AND ag.product_id=p.id)
+              )
+
+              AND (
+                  :category_id IS NULL
+                  OR EXISTS(
+                      SELECT 1
+                      FROM product_category_relations pcr
+                      WHERE pcr.product_id=p.id
+                        AND pcr.category_id=:category_id
+                  )
               )
             GROUP BY p.id,p.merchant_code,p.product_name,p.spec,p.brand
             ORDER BY score DESC,p.product_name,p.merchant_code
             LIMIT {cap}
             """
         ),
-        {
-            "department_id": department_id,
-            "like": like,
-            "exact": q.lower(),
-            "prefix": f"{q.lower()}%",
-        },
+{
+"department_id": department_id,
+"like": like,
+"exact": q.lower(),
+"prefix": f"{q.lower()}%",
+"category_id": category_id,
+}
     ).mappings().all()
     return {
         "query": q,
@@ -424,7 +433,7 @@ def search_products(
                 "name": r["product_name"],
                 "spec": r["spec"],
                 "brand": r["brand"],
-                "matched_aliases": r["matched_aliases"] or "",
+                "matched_aliases": "",
             }
             for r in rows
         ],
@@ -550,6 +559,45 @@ def _product_sales_metrics(
         )
     return metrics, trend
 
+def list_product_categories(
+    db: Session,
+) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text("""
+            SELECT id, category_name
+            FROM product_categories
+            ORDER BY category_name
+        """)
+    ).mappings().all()
+
+    return [
+        {
+            "id": int(r["id"]),
+            "name": r["category_name"],
+        }
+        for r in rows
+    ]
+
+
+def _product_categories(
+    db: Session,
+    product_id: int,
+) -> list[str]:
+    rows = db.execute(
+        text("""
+            SELECT pc.category_name
+            FROM product_category_relations pcr
+            JOIN product_categories pc
+              ON pc.id=pcr.category_id
+            WHERE pcr.product_id=:product_id
+            ORDER BY pc.category_name
+        """),
+        {
+            "product_id": product_id,
+        },
+    ).scalars().all()
+
+    return [str(x) for x in rows]
 
 def _product_shop_sales(
     db: Session,
@@ -576,7 +624,9 @@ def _product_shop_sales(
     rows = db.execute(
         text(
             f"""
-            SELECT s.source_name AS shop,
+            SELECT
+                s.id AS shop_id,
+                s.source_name AS shop,
                    SUM(CASE WHEN sd.business_date>=:d7 THEN sd.sales_qty ELSE 0 END) AS sales7,
                    SUM(CASE WHEN sd.business_date>=:d14 THEN sd.sales_qty ELSE 0 END) AS sales14,
                    SUM(sd.sales_qty) AS sales30
@@ -597,6 +647,7 @@ def _product_shop_sales(
     total30 = sum(_number(r["sales30"]) for r in rows)
     return [
         {
+            "shop_id": r["shop_id"],
             "shop": r["shop"],
             "sales7": _round(_number(r["sales7"]), 2),
             "sales14": _round(_number(r["sales14"]), 2),
@@ -703,6 +754,11 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
     if not product:
         raise LookupError(f"商品不存在：{merchant_code}")
 
+    categories = _product_categories(
+        db,
+        int(product["id"]),
+    )
+
     latest_sales_date = _get_latest_sales_date(db, department_id)
     latest_inventory_date = _get_latest_inventory_date(db, department_id)
     metrics, trend = _product_sales_metrics(db, department_id, scope, int(product["id"]), latest_sales_date)
@@ -788,6 +844,7 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
             "spec": product["spec"],
             "brand": product["brand"],
             "category": product["category"],
+            "categories": categories,
             "barcode": product["barcode"],
             "inventory_category": health,
             "inventory_category_label": CATEGORY_LABELS[health],
@@ -821,6 +878,7 @@ def save_product_note(
     product = _resolve_product(db, merchant_code)
     if not product:
         raise LookupError(f"商品不存在：{merchant_code}")
+
     db.execute(
         text(
             """

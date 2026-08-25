@@ -13,6 +13,7 @@ from ..services.analysis_service import (
     get_product_detail,
     search_products,
     save_product_note,
+    list_product_categories,
 )
 from ..services.dashboard_service import DashboardScope
 from ..services.permission_service import ActorNotFound, PermissionDenied
@@ -42,6 +43,7 @@ def _scope(
     include_name: str,
     exclude_name: str,
     product_codes: list[str] | tuple[str, ...] = (),
+    product_category_ids: list[int] | tuple[int, ...] = (),
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> DashboardScope:
@@ -57,6 +59,7 @@ def _scope(
         include_name=include_name,
         exclude_name=exclude_name,
         product_codes=tuple(product_codes),
+        product_category_ids=tuple(product_category_ids),
     )
 
 
@@ -70,6 +73,7 @@ def inventory_analysis(
     include_name: str = "",
     exclude_name: str = "",
     product_codes: list[str] = Query(default=[]),
+    product_category_ids: list[int] = Query(default=[]),
     category: str | None = None,
     high_cover_days: int = Query(90, ge=1, le=3650),
     stagnant_aging_days: int = Query(180, ge=1, le=3650),
@@ -80,7 +84,7 @@ def inventory_analysis(
     try:
         return get_inventory_analysis(
             db,
-            _scope(actor["user_id"], department_code, days, shops, warehouses, product_search, include_name, exclude_name, product_codes),
+            _scope(actor["user_id"], department_code, days, shops, warehouses, product_search, include_name, exclude_name, product_codes,product_category_ids,),
             category=category,
             high_cover_days=high_cover_days,
             stagnant_aging_days=stagnant_aging_days,
@@ -121,12 +125,21 @@ def expiry_batches(
     except Exception as exc:
         _handle(exc)
 
-
+@router.get("/product-categories")
+def product_categories(
+    actor: dict = Depends(require_actor),
+    db: Session = Depends(get_db),
+):
+    try:
+        return list_product_categories(db)
+    except Exception as exc:
+        _handle(exc)
 @router.get("/products/search")
 def product_search(
     q: str = Query("", min_length=0, max_length=255),
     department_code: str = "B2C",
     limit: int = Query(20, ge=1, le=30),
+    category_id: int | None = None,
     actor: dict = Depends(require_actor),
     db: Session = Depends(get_db),
 ):
@@ -136,6 +149,7 @@ def product_search(
             DashboardScope(actor_user_id=actor["user_id"], department_code=department_code),
             q,
             limit=limit,
+            category_id=category_id,
         )
     except Exception as exc:
         _handle(exc)
