@@ -626,7 +626,16 @@ def list_tasks(
         can_edit_note = int(task["owner_user_pk"]) == int(actor["id"])
         can_request_delete = can_edit_note and task["status"] in {"running", "delete_rejected"}
         can_withdraw = can_edit_note and task["status"] == "pending_delete" and int(task.get("delete_requester_user_pk") or 0) == int(actor["id"])
-        can_decide = role in {"system_admin", "dept_admin"} and task["status"] == "pending_delete" and int(task.get("delete_requester_user_pk") or 0) != int(actor["id"])
+        can_decide = (
+            task["status"] == "pending_delete"
+            and (
+                role == "system_admin"
+                or (
+                    role == "dept_admin"
+                    and int(task.get("delete_requester_user_pk") or 0) != int(actor["id"])
+                )
+            )
+        )
         public_rows.append({
             "task_no": task["task_no"], "sku": task["merchant_code"], "product_name": task["product_name"],
             "owner": {"user_id": task["owner_user_id"], "username": task["owner_name"]},
@@ -730,8 +739,11 @@ def decide_delete(db: Session, actor_user_id: str, task_no: str, decision: str) 
     role = _actor_role(db, actor, int(row["department_id"]))
     if role not in {"system_admin", "dept_admin"}:
         raise PermissionDenied("只有系统管理员或本部门部门管理员可以审批删除")
-    if int(row.get("delete_requester_user_pk") or 0) == int(actor["id"]):
-        raise PermissionDenied("自己的删除申请不能由自己审批")
+    if (
+        role == "dept_admin"
+        and int(row.get("delete_requester_user_pk") or 0) == int(actor["id"])
+    ):
+        raise PermissionDenied("部门管理员自己的删除申请不能由自己审批")
     if decision not in {"approve", "reject"}:
         raise ValueError("decision 只能是 approve / reject")
     if decision == "approve":
