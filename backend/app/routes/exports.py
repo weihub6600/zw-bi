@@ -110,6 +110,16 @@ def _split_csv(value: str) -> list[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def _split_int_csv(value: str) -> list[int]:
+    values: list[int] = []
+    for item in _split_csv(value):
+        try:
+            values.append(int(item))
+        except ValueError as exc:
+            raise ExportError("商品分类参数必须是整数 ID") from exc
+    return values
+
+
 @router.get("/inventory")
 def download_inventory(department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try:
@@ -138,7 +148,9 @@ def download_inventory_analysis(
     include_name: str = "",
     exclude_name: str = "",
     product_codes: str = "",
+    product_category_ids: str = "",
     category: str = "",
+    detail_warehouses: bool = False,
     actor: dict = Depends(require_actor),
     db: Session = Depends(get_db),
 ):
@@ -155,7 +167,9 @@ def download_inventory_analysis(
             include_name=include_name,
             exclude_name=exclude_name,
             product_codes=_split_csv(product_codes),
+            product_category_ids=_split_int_csv(product_category_ids),
             category=category or None,
+            detail_warehouses=detail_warehouses,
         )
         return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:
@@ -170,6 +184,7 @@ def download_expiry_batches(
     include_name: str = "",
     exclude_name: str = "",
     product_codes: str = "",
+    product_category_ids: str = "",
     statuses: str = "",
     remaining_days_min: int | None = None,
     remaining_days_max: int | None = None,
@@ -190,6 +205,7 @@ def download_expiry_batches(
             include_name=include_name,
             exclude_name=exclude_name,
             product_codes=_split_csv(product_codes),
+            product_category_ids=_split_int_csv(product_category_ids),
             statuses=_split_csv(statuses),
             remaining_days_min=remaining_days_min,
             remaining_days_max=remaining_days_max,

@@ -31,7 +31,8 @@ const expiryStatus=computed(()=>String(route.query.expiry_status||'').trim())
 const listMode=computed(()=>!sku.value && (!!stockCategory.value || !!expiryStatus.value))
 const priceVisible=computed(()=>data.value?.meta?.price_visible===true)
 const stockLabels={healthy:'健康库存',high:'高库存',stagnant:'呆滞库存',no_sales:'无销量库存'}
-const sortedShopSales=computed(()=>sortRows(data.value?.shop_sales||[],shopSort.value))
+const sortedShopSales=computed(()=>sortRows(data.value?.shop_sales_options||data.value?.shop_sales||[],shopSort.value))
+const showYesterdaySales=computed(()=>data.value?.meta?.yesterday_sales_available===true)
 const sortedExpiry=computed(()=>sortRows(data.value?.expiry_batches||[],expirySort.value))
 const selectedProductLabel=computed(()=>data.value?`${data.value.product.name} · ${data.value.product.sku}`:'')
 const shopContext=computed(()=>!f.shops.length?'全部店铺':f.shops.length<=2?f.shops.join('、'):`${f.shops.slice(0,2).join('、')} 等 ${f.shops.length} 个`)
@@ -54,10 +55,11 @@ function clearShopFilter(){if(!f.shops.length)return;f.shops=[];markCustomContex
 function clearWarehouseFilter(){if(!f.warehouses.length)return;f.warehouses=[];markCustomContext()}
 function clearCategory(){const q={...route.query};delete q.stock_category;delete q.expiry_status;router.replace({path:'/product',query:q})}
 function resetDrillContext(){f.shops=[];f.warehouses=[];markCustomContext();clearCategory()}
+function updateShopSelection(){markCustomContext()}
 
 async function runSearch(value=searchText.value){
   const q=String(value||'').trim();searchError.value=''
-  if(!q){searchRows.value=[];searchOpen.value=false;return}
+  if(!q && productCategoryId.value==null){searchRows.value=[];searchOpen.value=false;return}
   searchLoading.value=true
   try{
   const r=await searchProducts(q,{
@@ -76,13 +78,13 @@ async function searchEnter(){if(searchRows.value.length){selectProduct(searchRow
 
 async function loadCategoryList(id){
   if(stockCategory.value){
-    const r=await fetchInventoryAnalysis({days:30,shops:f.shops,warehouses:f.warehouses,productSearch:f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,category:stockCategory.value})
+    const r=await fetchInventoryAnalysis({days:30,shops:f.shops,warehouses:f.warehouses,productSearch:f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,productCategoryIds:f.productCategoryIds,category:stockCategory.value})
     if(id!==serial)return
     listTitle.value=stockLabels[stockCategory.value]||'库存分类'
     listRows.value=(r.rows||[]).map(x=>({sku:x.sku,name:x.name,stock:x.stock_qty,sales30:x.sales30,metric:x.cover_days==null?'—':`${Number(x.cover_days).toFixed(1)}天`,metricLabel:'预计周转'}));return
   }
   if(expiryStatus.value){
-    const r=await fetchExpiryBatches({warehouses:f.warehouses,productSearch:f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,statuses:[expiryStatus.value],limit:5000})
+    const r=await fetchExpiryBatches({warehouses:f.warehouses,productSearch:f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,productCategoryIds:f.productCategoryIds,statuses:[expiryStatus.value],limit:5000})
     if(id!==serial)return
     const bySku=new Map()
     for(const x of r.rows||[]){const old=bySku.get(x.sku);if(!old)bySku.set(x.sku,{sku:x.sku,name:x.name,stock:Number(x.stock_qty||0),sales30:null,pct:x.remaining_pct});else{old.stock+=Number(x.stock_qty||0);if(x.remaining_pct!=null)old.pct=old.pct==null?x.remaining_pct:Math.min(old.pct,x.remaining_pct)}}
@@ -115,20 +117,19 @@ function renderCharts(){
   if(shopChartEl.value){
     if(!shopChart)shopChart=echarts.init(shopChartEl.value)
     const rows=[...(data.value?.shop_sales||[])].sort((a,b)=>Number(b.sales30||0)-Number(a.sales30||0)).slice(0,12).reverse()
-    shopChart.setOption({tooltip:{trigger:'axis',axisPointer:{type:'shadow'},backgroundColor:'rgba(20,28,50,.94)',borderWidth:0,textStyle:{color:'#fff'},formatter(ps){const i=ps?.[0]?.dataIndex||0,row=rows[i]||{};return `${row.shop||''}<br>7天：${n(row.sales7)}<br>14天：${n(row.sales14)}<br>30天：${n(row.sales30)}<br>30天占比：${n(row.share30_pct,1)}%`}},grid:{left:138,right:36,top:12,bottom:28},xAxis:{type:'value',name:'30天销量'},yAxis:{type:'category',data:rows.map(x=>x.shop),axisLabel:{width:122,overflow:'truncate'}},series:[{type:'bar',data:rows.map(x=>Number(x.sales30||0)),barMaxWidth:18,label:{show:true,position:'right',fontSize:12},itemStyle:{borderRadius:[0,6,6,0]}}]},true)
+    shopChart.setOption({tooltip:{trigger:'axis',axisPointer:{type:'shadow'},backgroundColor:'rgba(20,28,50,.94)',borderWidth:0,textStyle:{color:'#fff'},formatter(ps){const i=ps?.[0]?.dataIndex||0,row=rows[i]||{};const yesterday=showYesterdaySales.value?`<br>昨日：${n(row.sales_yesterday)}`:'';return `${row.shop||''}${yesterday}<br>7天：${n(row.sales7)}<br>14天：${n(row.sales14)}<br>30天：${n(row.sales30)}<br>30天占比：${n(row.share30_pct,1)}%`}},grid:{left:138,right:36,top:12,bottom:28},xAxis:{type:'value',name:'30天销量'},yAxis:{type:'category',data:rows.map(x=>x.shop),axisLabel:{width:122,overflow:'truncate'}},series:[{type:'bar',data:rows.map(x=>Number(x.sales30||0)),barMaxWidth:18,label:{show:true,position:'right',fontSize:12},itemStyle:{borderRadius:[0,6,6,0]}}]},true)
+    shopChart.off('click')
   }
 }
 function onResize(){chart?.resize();shopChart?.resize()}
 watch(searchText,scheduleSearch)
-watch(productCategoryId,()=>{
-  if(searchText.value.trim()) runSearch()
-})
+watch(productCategoryId,()=>runSearch())
 watch(()=>[sku.value,stockCategory.value,expiryStatus.value],load)
 watch(()=>[f.dateRange,f.customStart,f.customEnd,JSON.stringify(f.shops),JSON.stringify(f.warehouses)],load)
 onMounted(async()=>{
   window.addEventListener('resize',onResize)
   try{
-    productCategories.value=await fetchProductCategories()
+    productCategories.value=await fetchProductCategories({departmentCode:f.departmentCode})
   }catch(e){
     console.error('加载商品分类失败',e)
     productCategories.value=[]
@@ -166,7 +167,7 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
     v-model="searchText"
     autocomplete="off"
     placeholder="输入商家编码或商品名称，直接搜索…"
-    @focus="searchText&&runSearch()"
+    @focus="(searchText||productCategoryId!=null)&&runSearch()"
     @keyup.enter="searchEnter"
   />
       <div v-if="searchLoading" class="product-search-state">搜索中…</div>
@@ -207,14 +208,14 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
     </section>
 
     <section v-else-if="!sku" class="product-welcome-panel">
-      <div class="product-welcome-icon"><Sparkles :size="24"/></div><h2>搜索一个商品开始分析</h2><p>可直接输入商家编码、当前商品名称或历史商品名称；也可以从经营总览、库存分析、效期中心点击商品下钻。</p>
+      <div class="product-welcome-icon"><Sparkles :size="24"/></div><h2>搜索一个商品开始分析</h2><p>可直接输入商家编码或当前商品名称；也可以先选择商品分类浏览，再从经营总览、库存分析、效期中心点击商品下钻。</p>
     </section>
     <div v-if="error" class="api-error"><b>商品接口暂不可用</b><span>{{ error }}</span><button class="ui-btn ui-btn-ghost" @click="load">重新读取</button></div>
     <div v-else-if="loading && !data && !listMode && sku" class="dashboard-loading">正在读取商品分析…</div>
 
     <template v-if="data">
       <section class="product-hero-v154">
-        <div class="product-identity"><small>当前商品</small><h2>{{ data.product.name }}</h2><p>{{ data.product.sku }}<template v-if="data.product.spec"> · {{ data.product.spec }}</template><template v-if="data.product.brand"> · {{ data.product.brand }}</template></p><div class="product-tags"><span>{{ data.product.inventory_category_label }}</span><span :class="statusClass(data.product.expiry_status)">{{ data.product.expiry_status }}</span><span>{{ data.meta?.department?.name }}</span></div></div>
+        <div class="product-identity"><small>当前商品</small><h2>{{ data.product.name }}</h2><p>{{ data.product.sku }}<template v-if="data.product.spec"> · {{ data.product.spec }}</template><template v-if="data.product.brand"> · {{ data.product.brand }}</template></p><p class="product-category-summary">商品分类：{{ data.product.categories?.length ? data.product.categories.join('、') : '未分类' }}</p><div class="product-tags"><span>{{ data.product.inventory_category_label }}</span><span :class="statusClass(data.product.expiry_status)">{{ data.product.expiry_status }}</span><span>{{ data.meta?.department?.name }}</span></div></div>
         <div class="hero-data-date"><span>销量截至 <b>{{ data.meta.latest_sales_date||'—' }}</b></span><span>分析区间 <b>{{ data.meta.selected_start_date||'—' }} → {{ data.meta.selected_end_date||'—' }}</b></span><span>库存快照 <b>{{ data.meta.latest_inventory_date||'—' }}</b></span></div>
       </section>
 
@@ -238,13 +239,8 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
       </section>
 
       <section class="panel shop-sales-panel shop-sales-v154">
-        <div class="section-head"><div><h3>各店铺销量贡献</h3><span>同一商品按店铺拆分销售贡献；库存不伪造店铺维度</span></div><b>{{ data.shop_sales?.length||0 }} 个店铺</b></div>
-        <div class="shop-sales-layout"><div ref="shopChartEl" class="shop-sales-chart"></div><div class="table-wrap shop-sales-table-wrap"><table class="sortable-table"><thead><tr><th>店铺</th><th><button @click="toggleSort(shopSort,'sales7')">7天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales7') }}</button></th><th><button @click="toggleSort(shopSort,'sales14')">14天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales14') }}</button></th><th><button @click="toggleSort(shopSort,'sales30')">30天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales30') }}</button></th><th><button @click="toggleSort(shopSort,'share30_pct')">30天占比 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'share30_pct') }}</button></th></tr></thead><tbody><tr
-  v-for="r in sortedShopSales"
-  :key="r.shop"
-  class="shop-drill-row"
-  @click="drillToShop(r)"
-><td><b>{{ r.shop }}</b></td><td>{{ n(r.sales7) }}</td><td>{{ n(r.sales14) }}</td><td><b>{{ n(r.sales30) }}</b></td><td>{{ n(r.share30_pct,1) }}%</td></tr><tr v-if="!sortedShopSales.length"><td colspan="5" class="table-empty">该商品当前没有店铺销量。</td></tr></tbody></table></div></div>
+        <div class="section-head"><div><h3>各店铺销量贡献</h3><span>勾选店铺后，商品趋势、KPI 与对比数据按所选店铺计算；库存不按店铺拆分</span></div><b>{{ f.shops.length ? `已选 ${f.shops.length} 个` : `${sortedShopSales.length} 个店铺` }}</b></div>
+        <div class="shop-sales-layout"><div ref="shopChartEl" class="shop-sales-chart"></div><div class="table-wrap shop-sales-table-wrap"><table class="sortable-table"><thead><tr><th class="shop-select-col">选择</th><th>店铺</th><th v-if="showYesterdaySales"><button @click="toggleSort(shopSort,'sales_yesterday')">昨日销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales_yesterday') }}</button></th><th><button @click="toggleSort(shopSort,'sales7')">7天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales7') }}</button></th><th><button @click="toggleSort(shopSort,'sales14')">14天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales14') }}</button></th><th><button @click="toggleSort(shopSort,'sales30')">30天销量 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'sales30') }}</button></th><th><button @click="toggleSort(shopSort,'share30_pct')">30天占比 <ArrowUpDown :size="12"/>{{ sortMark(shopSort,'share30_pct') }}</button></th></tr></thead><tbody><tr v-for="r in sortedShopSales" :key="r.shop"><td class="shop-select-col"><input v-model="f.shops" type="checkbox" :value="r.shop" :aria-label="`筛选店铺 ${r.shop}`" @change="updateShopSelection"/></td><td><b>{{ r.shop }}</b></td><td v-if="showYesterdaySales">{{ n(r.sales_yesterday) }}</td><td>{{ n(r.sales7) }}</td><td>{{ n(r.sales14) }}</td><td><b>{{ n(r.sales30) }}</b></td><td>{{ n(r.share30_pct,1) }}%</td></tr><tr v-if="!sortedShopSales.length"><td :colspan="showYesterdaySales?7:6" class="table-empty">该商品当前没有店铺销量。</td></tr></tbody></table></div></div>
       </section>
 
       <section class="panel table-wrap expiry-table-v154">

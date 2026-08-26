@@ -119,6 +119,7 @@ def get_inventory_analysis(
     high_cover_days: int = DEFAULT_HIGH_COVER_DAYS,
     stagnant_aging_days: int = DEFAULT_STAGNANT_AGING_DAYS,
     stagnant_cover_days: int = DEFAULT_STAGNANT_COVER_DAYS,
+    detail_warehouses: bool = False,
 ) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     department_id = int(department["id"])
@@ -187,6 +188,26 @@ def get_inventory_analysis(
     if category in CATEGORY_LABELS:
         rows = [r for r in rows if r["category"] == category]
 
+    warehouse_columns: list[str] = []
+    if detail_warehouses and latest_inventory_date:
+        warehouse_rows = _inventory_by_product_warehouse(
+            db, department_id, scope, latest_inventory_date
+        )
+        by_product: dict[int, dict[str, float]] = {}
+        for warehouse_row in warehouse_rows:
+            product_id = int(warehouse_row["product_id"])
+            warehouse = str(warehouse_row["warehouse"])
+            by_product.setdefault(product_id, {})[warehouse] = _round(
+                _number(warehouse_row["stock_qty"]), 2
+            ) or 0.0
+        warehouse_columns = sorted({name for values in by_product.values() for name in values})
+        for row in rows:
+            stock_by_warehouse = by_product.get(int(row["product_id"]), {})
+            row["warehouse_stocks"] = {
+                warehouse: stock_by_warehouse.get(warehouse, 0.0)
+                for warehouse in warehouse_columns
+            }
+
     total_stock = sum(_number(r["stock_qty"]) for r in rows)
     return {
         "meta": {
@@ -202,12 +223,43 @@ def get_inventory_analysis(
                 "stagnant_aging_days": stagnant_aging_days,
                 "stagnant_cover_days": stagnant_cover_days,
             },
+            "warehouse_columns": warehouse_columns,
+            "detail_warehouses": detail_warehouses,
         },
         "categories": categories,
         "selected_category": category if category in CATEGORY_LABELS else None,
         "rows": rows,
         "totals": {"sku_count": len(rows), "stock_qty": _round(total_stock, 2)},
     }
+
+
+def _inventory_by_product_warehouse(
+    db: Session,
+    department_id: int,
+    scope: DashboardScope,
+    snapshot_date: date,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {
+        "department_id": department_id,
+        "snapshot_date": snapshot_date,
+    }
+    filters = _scope_clauses(scope, params, product_alias="p", warehouse_alias="w")
+    rows = db.execute(
+        text(
+            f"""
+            SELECT ib.product_id,w.source_name AS warehouse,SUM(ib.stock_qty) AS stock_qty
+            FROM inventory_batch ib
+            JOIN products p ON p.id=ib.product_id
+            JOIN warehouses w ON w.id=ib.warehouse_id
+            WHERE ib.department_id=:department_id
+              AND ib.snapshot_date=:snapshot_date
+              {_where(filters)}
+            GROUP BY ib.product_id,w.source_name
+            """
+        ),
+        params,
+    ).mappings().all()
+    return [dict(row) for row in rows]
 
 
 def _expiry_rows_for_scope(
@@ -372,10 +424,10 @@ def search_products(
     limit: int = 20,
     category_id: int | None = None,
 ) -> dict[str, Any]:
-    """按商家编码、当前商品名、历史别名搜索；只返回当前部门实际存在过的数据商品。"""
+    """按商家编码或当前商品名搜索；分类可单独用于浏览商品。"""
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     q = query.strip()
-    if not q:
+    if not q and category_id is None:
         return {"rows": [], "query": "", "department": {"code": department["code"], "name": department["name"]}}
     department_id = int(department["id"])
     cap = max(1, min(int(limit), 30))
@@ -392,7 +444,8 @@ def search_products(
                      ELSE 50 END) AS score
             FROM products p
             WHERE (
-                   LOWER(p.merchant_code) LIKE :like
+                   :query_empty=1
+                   OR LOWER(p.merchant_code) LIKE :like
                    OR LOWER(p.product_name) LIKE :like
                    )
               AND (
@@ -420,6 +473,7 @@ def search_products(
 "like": like,
 "exact": q.lower(),
 "prefix": f"{q.lower()}%",
+"query_empty": 1 if not q else 0,
 "category_id": category_id,
 }
     ).mappings().all()
@@ -561,13 +615,30 @@ def _product_sales_metrics(
 
 def list_product_categories(
     db: Session,
+    scope: DashboardScope,
 ) -> list[dict[str, Any]]:
+    _, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
+    department_id = int(department["id"])
     rows = db.execute(
         text("""
-            SELECT id, category_name
-            FROM product_categories
-            ORDER BY category_name
-        """)
+            SELECT DISTINCT pc.id, pc.category_name
+            FROM product_categories pc
+            JOIN product_category_relations pcr ON pcr.category_id=pc.id
+            WHERE EXISTS(
+                SELECT 1 FROM sales_daily sd
+                WHERE sd.department_id=:department_id AND sd.product_id=pcr.product_id
+            )
+            OR EXISTS(
+                SELECT 1 FROM inventory_batch ib
+                WHERE ib.department_id=:department_id AND ib.product_id=pcr.product_id
+            )
+            OR EXISTS(
+                SELECT 1 FROM aging_snapshot ag
+                WHERE ag.department_id=:department_id AND ag.product_id=pcr.product_id
+            )
+            ORDER BY pc.category_name
+        """),
+        {"department_id": department_id},
     ).mappings().all()
 
     return [
@@ -599,6 +670,20 @@ def _product_categories(
 
     return [str(x) for x in rows]
 
+
+def _has_sales_on_date(db: Session, department_id: int, business_date: date) -> bool:
+    return db.execute(
+        text(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM sales_daily
+                WHERE department_id=:department_id AND business_date=:business_date
+            )
+            """
+        ),
+        {"department_id": department_id, "business_date": business_date},
+    ).scalar_one() == 1
+
 def _product_shop_sales(
     db: Session,
     department_id: int,
@@ -627,7 +712,8 @@ def _product_shop_sales(
             SELECT
                 s.id AS shop_id,
                 s.source_name AS shop,
-                   SUM(CASE WHEN sd.business_date>=:d7 THEN sd.sales_qty ELSE 0 END) AS sales7,
+                SUM(CASE WHEN sd.business_date=:end_date THEN sd.sales_qty ELSE 0 END) AS sales_yesterday,
+                SUM(CASE WHEN sd.business_date>=:d7 THEN sd.sales_qty ELSE 0 END) AS sales7,
                    SUM(CASE WHEN sd.business_date>=:d14 THEN sd.sales_qty ELSE 0 END) AS sales14,
                    SUM(sd.sales_qty) AS sales30
             FROM sales_daily sd
@@ -649,6 +735,7 @@ def _product_shop_sales(
         {
             "shop_id": r["shop_id"],
             "shop": r["shop"],
+            "sales_yesterday": _round(_number(r["sales_yesterday"]), 2),
             "sales7": _round(_number(r["sales7"]), 2),
             "sales14": _round(_number(r["sales14"]), 2),
             "sales30": _round(_number(r["sales30"]), 2),
@@ -761,9 +848,24 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
 
     latest_sales_date = _get_latest_sales_date(db, department_id)
     latest_inventory_date = _get_latest_inventory_date(db, department_id)
+    yesterday_sales_date = date.today() - timedelta(days=1)
+    yesterday_sales_available = _has_sales_on_date(db, department_id, yesterday_sales_date)
     metrics, trend = _product_sales_metrics(db, department_id, scope, int(product["id"]), latest_sales_date)
     comparison = sales_period_comparison(db, department_id, scope, latest_sales_date, product_id=int(product["id"]))
     shop_sales = _product_shop_sales(db, department_id, scope, int(product["id"]), latest_sales_date)
+    shop_selection_scope = DashboardScope(
+        actor_user_id=scope.actor_user_id,
+        department_code=scope.department_code,
+        days=scope.days,
+        warehouses=scope.warehouses,
+    )
+    shop_sales_options = _product_shop_sales(
+        db,
+        department_id,
+        shop_selection_scope,
+        int(product["id"]),
+        latest_sales_date,
+    )
     warehouse_stock = _product_warehouse_stock(db, department_id, scope, int(product["id"]), latest_inventory_date)
     stock_total = sum(_number(x["stock_qty"]) for x in warehouse_stock)
 
@@ -830,6 +932,8 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
             "single_shop": scope.single_shop,
             "price_visible": scope.single_shop,
             "latest_sales_date": _date_text(latest_sales_date),
+            "yesterday_sales_date": _date_text(yesterday_sales_date),
+            "yesterday_sales_available": yesterday_sales_available,
             "selected_start_date": _date_text(selected_sales_range(scope, latest_sales_date)[0]) if latest_sales_date else None,
             "selected_end_date": _date_text(selected_sales_range(scope, latest_sales_date)[1]) if latest_sales_date else None,
             "selected_days": selected_sales_range(scope, latest_sales_date)[2] if latest_sales_date else scope.days,
@@ -855,6 +959,7 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
         "comparison": comparison,
         "trend": trend,
         "shop_sales": shop_sales,
+        "shop_sales_options": shop_sales_options,
         "inventory": {
             "stock_qty": _round(stock_total, 2),
             "predicted_daily": _round(_number(merged.get("predicted_daily")), 2),

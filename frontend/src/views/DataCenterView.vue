@@ -1,12 +1,12 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import {
-  AlertTriangle, CheckCircle2, Database, Download, FileCheck2, FileSpreadsheet, GitMerge,
+  AlertTriangle, CheckCircle2, Database, Download, FileCheck2, FileSpreadsheet,
   History, RotateCcw, Search, ShieldCheck, UploadCloud, XCircle
 } from 'lucide-vue-next'
 import {
-  commitImport, fetchImportBatch, fetchImportIssues, fetchLatestBusinessDate, fetchProductNameAliases,
-  fetchRecentImports, previewImport, resolveProductNameAlias, rollbackImport
+  commitImport, fetchImportBatch, fetchImportIssues, fetchLatestBusinessDate,
+  fetchRecentImports, previewImport, rollbackImport
 } from '../api/imports'
 
 import { useAuthStore } from '../stores/auth'
@@ -45,9 +45,6 @@ const qualitySeverity = ref('')
 const qualityIssues = ref([])
 const qualityTotal = ref(0)
 const qualityLoading = ref(false)
-const aliasGroups = ref([])
-const aliasLoading = ref(false)
-const aliasDraft = ref({})
 
 const typeDefs = {
   sales: {
@@ -228,30 +225,6 @@ async function loadQualityIssues(){
   finally { qualityLoading.value=false }
 }
 
-async function loadProductAliases(){
-  aliasLoading.value=true
-  try {
-    const result=await fetchProductNameAliases({departmentCode:departmentCode.value,pendingOnly:true})
-    aliasGroups.value=result.items || []
-    const next={}
-    for (const item of aliasGroups.value) next[item.product_id]=aliasDraft.value[item.product_id] || item.canonical_name
-    aliasDraft.value=next
-  } catch (e) { errorMessage.value=e.message }
-  finally { aliasLoading.value=false }
-}
-
-async function resolveAlias(item){
-  const canonicalName=String(aliasDraft.value[item.product_id]||'').trim()
-  if(!canonicalName) return
-  const ok=window.confirm(`确认把商家编码 ${item.merchant_code} 的名称变体聚合为“${canonicalName}”吗？\n历史销量、库存、库龄仍按同一商家编码/商品ID连续分析，不会拆成多个商品。`)
-  if(!ok) return
-  try{
-    await resolveProductNameAlias(item.product_id,{departmentCode:departmentCode.value,canonicalName})
-    message.value=`已完成 ${item.merchant_code} 的商品名称聚合：${canonicalName}`
-    await loadProductAliases()
-  }catch(e){errorMessage.value=e.message}
-}
-
 async function runRollback(record){
   resetFeedback()
   const detail=await loadBatchDetail(record.batch_no)
@@ -276,7 +249,7 @@ async function notifyLatestDateChanged(){
 
 watch([dataType,businessDate,departmentCode], invalidatePreview)
 watch(qualitySeverity, loadQualityIssues)
-watch(activeTab, tab => { if (canImport.value && tab==='records') loadRecords(); if (canImport.value && tab==='quality') { if (qualityBatchNo.value) loadQualityIssues(); loadProductAliases() } })
+watch(activeTab, tab => { if (canImport.value && tab==='records') loadRecords(); if (canImport.value && tab==='quality' && qualityBatchNo.value) loadQualityIssues() })
 
 onMounted(async()=>{
   if (canImport.value) await loadRecords()
@@ -350,7 +323,7 @@ onMounted(async()=>{
           <div class="schema-chips"><span v-for="field in currentType.fields" :key="field">{{ field }}</span></div>
           <div class="dc-rule-list">
             <div><CheckCircle2 :size="15" />业务日期由导入界面确定，不从 Excel 猜测。</div>
-            <div><CheckCircle2 :size="15" />商家编码是唯一商品键；名称变体自动聚合到同一商品，管理员在数据质量中确认规范名称。</div>
+            <div><CheckCircle2 :size="15" />商家编码是唯一商品键；商品资料再次导入时会按最新文件更新商品名称、规格、品牌、分类和条码。</div>
             <div><CheckCircle2 :size="15" />销量按业务日期整日覆盖：同一天可重复上传，提交后清除旧数据，以最后一次成功上传为准；其他类型仍使用 SHA256 防重复。</div>
             <div><CheckCircle2 :size="15" />30天汇总销量禁止写入逐日销量表。</div>
             <div><CheckCircle2 :size="15" />库存效期和库龄成功导入后只保留本部门最新整表快照；销量数据持续累计沉淀。</div>
@@ -431,32 +404,6 @@ onMounted(async()=>{
         <div><span>存在问题批次</span><b>{{ qualitySummary.batches }}</b></div>
         <div><span>成功批次</span><b class="text-success">{{ qualitySummary.success }}</b></div>
       </div>
-      <section class="panel product-alias-panel">
-        <div class="section-head">
-          <div><h3><GitMerge :size="17" /> 商品名称聚合</h3><span>商家编码为唯一商品键；名称变化不会再阻断导入或拆分分析，只需管理员确认一个规范展示名称。</span></div>
-          <button class="dc-mini" :disabled="aliasLoading" @click="loadProductAliases">{{ aliasLoading?'读取中…':'刷新' }}</button>
-        </div>
-        <div v-if="aliasLoading && !aliasGroups.length" class="dc-empty">正在读取待确认名称变体…</div>
-        <div v-else-if="!aliasGroups.length" class="alias-empty"><CheckCircle2 :size="18"/><div><b>当前没有待聚合的商品名称</b><span>后续导入若出现同一商家编码的新名称，会自动进入这里，不再记为导入错误。</span></div></div>
-        <div v-else class="alias-list">
-          <article v-for="item in aliasGroups" :key="item.product_id" class="alias-card">
-            <div class="alias-code"><small>商家编码</small><b>{{ item.merchant_code }}</b></div>
-            <div class="alias-names">
-              <small>当前规范名</small><b>{{ item.canonical_name }}</b>
-              <div class="alias-chips"><span v-for="a in item.aliases" :key="a.alias_id">{{ a.alias_name }} <em>×{{ a.seen_count }}</em></span></div>
-            </div>
-            <label class="alias-canonical">聚合为
-              <input v-model.trim="aliasDraft[item.product_id]" :list="`alias-options-${item.product_id}`" placeholder="选择已有名称或输入新的规范名称" />
-              <datalist :id="`alias-options-${item.product_id}`">
-                <option :value="item.canonical_name"></option>
-                <option v-for="a in item.aliases" :key="`opt-${a.alias_id}`" :value="a.alias_name"></option>
-              </datalist>
-            </label>
-            <button class="dc-button primary alias-resolve" @click="resolveAlias(item)"><GitMerge :size="15"/>确认聚合</button>
-          </article>
-        </div>
-      </section>
-
       <section class="panel">
         <div class="dc-quality-toolbar">
           <label>导入批次<select v-model="qualityBatchNo" @change="loadQualityIssues"><option value="">请选择批次</option><option v-for="r in issueRecords" :key="r.batch_no" :value="r.batch_no">{{ r.batch_no }} · {{ r.original_filename }}</option></select></label>

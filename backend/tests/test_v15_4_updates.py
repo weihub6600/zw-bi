@@ -25,7 +25,7 @@ class V154UpdatesTests(unittest.TestCase):
         self.assertIn('"comparison": comparison', service)
         self.assertIn('@router.get("/products/search")', routes)
         self.assertLess(routes.index('@router.get("/products/search")'), routes.index('@router.get("/products/{merchant_code}")'))
-        self.assertIn('输入商家编码、商品名称或历史商品名', view)
+        self.assertIn('输入商家编码或商品名称', view)
         self.assertIn('全部店铺', view)
         self.assertIn('全部仓库', view)
         self.assertIn('同比 · 去年同期', view)

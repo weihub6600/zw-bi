@@ -12,7 +12,7 @@ const f=useFilterStore()
 const route=useRoute()
 const localProductSearch=ref(String(route.query.sku||''))
 const data=ref(null),error=ref(''),loading=ref(false)
-const shopOptions=ref([]),warehouseOptions=ref([])
+const shopOptions=ref([]),warehouseOptions=ref([]),productCategoryOptions=ref([])
 const statuses=ref([]),daysMin=ref(''),daysMax=ref(''),pctMin=ref(''),pctMax=ref('')
 const exporting=ref(false),exportError=ref(''),lastExportCount=ref(null)
 let timer=null,serial=0
@@ -26,11 +26,11 @@ function sortRows(rows,s){const dir=s.dir==='asc'?1:-1;return [...rows].sort((a,
 function toggleSort(key,defaultDir='desc'){sort.value=sort.value.key===key?{key,dir:sort.value.dir==='asc'?'desc':'asc'}:{key,dir:defaultDir}}
 function mark(key){return sort.value.key===key?(sort.value.dir==='asc'?'↑':'↓'):''}
 function toggleStatus(s){statuses.value=statuses.value.includes(s)?statuses.value.filter(x=>x!==s):[...statuses.value,s];load()}
-async function loadOptions(){try{const r=await fetchDashboardOptions();shopOptions.value=r.shops||[];warehouseOptions.value=r.warehouses||[]}catch(e){error.value=e.message}}
+async function loadOptions(){try{const r=await fetchDashboardOptions();shopOptions.value=r.shops||[];warehouseOptions.value=r.warehouses||[];productCategoryOptions.value=r.product_categories||[]}catch(e){error.value=e.message}}
 async function load(){
   const id=++serial;loading.value=true;error.value=''
   try{
-    const r=await fetchExpiryBatches({warehouses:f.warehouses,productSearch:localProductSearch.value||f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,statuses:statuses.value,remainingDaysMin:daysMin.value,remainingDaysMax:daysMax.value,remainingPctMin:pctMin.value,remainingPctMax:pctMax.value})
+    const r=await fetchExpiryBatches({warehouses:f.warehouses,productSearch:localProductSearch.value||f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,productCategoryIds:f.productCategoryIds,statuses:statuses.value,remainingDaysMin:daysMin.value,remainingDaysMax:daysMax.value,remainingPctMin:pctMin.value,remainingPctMax:pctMax.value})
     if(id===serial)data.value=r
   }catch(e){if(id===serial){error.value=`效期批次读取失败：${e.message}`;data.value=null}}
   finally{if(id===serial)loading.value=false}
@@ -42,7 +42,7 @@ async function downloadFiltered(){
     const r=await exportExpiryBatches({
       departmentCode:f.departmentCode,
       warehouses:f.warehouses,productSearch:localProductSearch.value||f.productSearch,
-      includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,
+      includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,productCategoryIds:f.productCategoryIds,
       statuses:statuses.value,
       remainingDaysMin:daysMin.value,remainingDaysMax:daysMax.value,
       remainingPctMin:pctMin.value,remainingPctMax:pctMax.value,
@@ -51,7 +51,7 @@ async function downloadFiltered(){
   }catch(e){exportError.value=e.message}
   finally{exporting.value=false}
 }
-watch(()=>[JSON.stringify(f.warehouses),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),localProductSearch.value],schedule)
+watch(()=>[JSON.stringify(f.warehouses),JSON.stringify(f.productCategoryIds),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),localProductSearch.value],schedule)
 watch(()=>[daysMin.value,daysMax.value,pctMin.value,pctMax.value],schedule)
 onMounted(async()=>{const qs=String(route.query.status||'');if(statusList.includes(qs))statuses.value=[qs];await loadOptions();await load()})
 </script>
@@ -59,7 +59,7 @@ onMounted(async()=>{const qs=String(route.query.status||'');if(statusList.includ
 <template>
   <div class="page">
     <div class="page-title"><h1>效期批次</h1><p>真实读取 inventory_batch，并按商品规则 &gt; 部门规则 &gt; 全局规则计算效期状态</p></div>
-    <FilterBar :shop-options="shopOptions" :warehouse-options="warehouseOptions" :show-date="false" />
+    <FilterBar :shop-options="shopOptions" :warehouse-options="warehouseOptions" :product-category-options="productCategoryOptions" :show-date="false" />
     <div class="expiry-dimension-note">店铺筛选在本页保留上下文，但效期库存本身不按店铺拆分，因此不会参与效期查询。<template v-if="localProductSearch"> · 当前商品：<b>{{ localProductSearch }}</b> <button class="link-button" @click="localProductSearch='';load()">清除</button></template></div>
 
     <div v-if="error" class="api-error"><b>效期接口暂不可用</b><span>{{ error }}</span><button @click="load">重新读取</button></div>

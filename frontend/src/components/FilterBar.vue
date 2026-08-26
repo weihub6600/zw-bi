@@ -9,26 +9,28 @@ import { useFilterStore } from '../stores/filter'
 const props=defineProps({
   shopOptions:{type:Array,default:()=>[]},
   warehouseOptions:{type:Array,default:()=>[]},
+  productCategoryOptions:{type:Array,default:()=>[]},
   loadingOptions:{type:Boolean,default:false},
   showDate:{type:Boolean,default:true}
 })
 const f=useFilterStore(),manage=ref(false),modal=ref(false),saving=ref(false),error=ref('')
-const shopQuery=ref(''),warehouseQuery=ref('')
-const form=reactive({id:null,name:'',shops:[],warehouses:[],productCodes:'',includeName:'',excludeName:''})
+const shopQuery=ref(''),warehouseQuery=ref(''),categoryQuery=ref('')
+const form=reactive({id:null,name:'',shops:[],warehouses:[],productCategoryIds:[],productCodes:'',includeName:'',excludeName:''})
 const filteredShops=computed(()=>props.shopOptions.filter(x=>String(x).toLowerCase().includes(shopQuery.value.trim().toLowerCase())))
 const filteredWarehouses=computed(()=>props.warehouseOptions.filter(x=>String(x).toLowerCase().includes(warehouseQuery.value.trim().toLowerCase())))
+const filteredCategories=computed(()=>props.productCategoryOptions.filter(x=>String(x.name).toLowerCase().includes(categoryQuery.value.trim().toLowerCase())))
 const activeConditionCount=computed(()=>[
-  props.showDate&&f.dateRange!=='30d',f.shops.length>0,f.warehouses.length>0,Boolean(f.productSearch),f.productCodes.length>0,Boolean(f.includeName),Boolean(f.excludeName)
+  props.showDate&&f.dateRange!=='30d',f.shops.length>0,f.warehouses.length>0,f.productCategoryIds.length>0,Boolean(f.productSearch),f.productCodes.length>0,Boolean(f.includeName),Boolean(f.excludeName)
 ].filter(Boolean).length)
 const datePresets=[['1d','昨天'],['7d','7天'],['14d','14天'],['30d','30天'],['custom','自定义']]
 
 function split(v){return String(v||'').split(/[,，\s]+/).map(x=>x.trim()).filter(Boolean)}
 function optionSummary(values,allLabel){if(!values.length)return allLabel;if(values.length===1)return values[0];return `已选 ${values.length} 项`}
 function setDateRange(v){f.dateRange=v;if(v!=='custom'){f.customStart='';f.customEnd=''}}
-function clearFilters(){f.dateRange='30d';f.customStart='';f.customEnd='';f.shops=[];f.warehouses=[];f.productSearch='';f.productCodes=[];f.includeName='';f.excludeName='';f.activePreset='全部';f.activePresetId=null}
-function openNew(){Object.assign(form,{id:null,name:'',shops:[...f.shops],warehouses:[...f.warehouses],productCodes:f.productCodes.join('\n'),includeName:f.includeName,excludeName:f.excludeName});error.value='';modal.value=true}
-function openEdit(p){Object.assign(form,{id:p.id,name:p.name,shops:[...(p.shops||[])],warehouses:[...(p.warehouses||[])],productCodes:(p.product_codes||[]).join('\n'),includeName:(p.include_name_keywords||[]).join(','),excludeName:(p.exclude_name_keywords||[]).join(',')});error.value='';modal.value=true}
-async function save(){saving.value=true;error.value='';try{await f.savePreset({id:form.id,name:form.name,payload:{name:form.name,shops:form.shops,warehouses:form.warehouses,product_codes:split(form.productCodes),include_name_keywords:split(form.includeName),exclude_name_keywords:split(form.excludeName)}});modal.value=false}catch(e){error.value=e.message}finally{saving.value=false}}
+function clearFilters(){f.dateRange='30d';f.customStart='';f.customEnd='';f.shops=[];f.warehouses=[];f.productCategoryIds=[];f.productSearch='';f.productCodes=[];f.includeName='';f.excludeName='';f.activePreset='全部';f.activePresetId=null}
+function openNew(){Object.assign(form,{id:null,name:'',shops:[...f.shops],warehouses:[...f.warehouses],productCategoryIds:[...f.productCategoryIds],productCodes:f.productCodes.join('\n'),includeName:f.includeName,excludeName:f.excludeName});error.value='';modal.value=true}
+function openEdit(p){Object.assign(form,{id:p.id,name:p.name,shops:[...(p.shops||[])],warehouses:[...(p.warehouses||[])],productCategoryIds:[...(p.product_category_ids||[])],productCodes:(p.product_codes||[]).join('\n'),includeName:(p.include_name_keywords||[]).join(','),excludeName:(p.exclude_name_keywords||[]).join(',')});error.value='';modal.value=true}
+async function save(){saving.value=true;error.value='';try{await f.savePreset({id:form.id,name:form.name,payload:{name:form.name,shops:form.shops,warehouses:form.warehouses,product_category_ids:form.productCategoryIds,product_codes:split(form.productCodes),include_name_keywords:split(form.includeName),exclude_name_keywords:split(form.excludeName)}});modal.value=false}catch(e){error.value=e.message}finally{saving.value=false}}
 async function remove(p){if(!confirm(`确定删除个人筛选预设“${p.name}”吗？`))return;try{await f.deletePreset(p.id)}catch(e){alert(e.message)}}
 onMounted(()=>f.loadPresets())
 </script>
@@ -79,6 +81,15 @@ onMounted(()=>f.loadPresets())
       </details>
 
       <details class="filter-dropdown">
+        <summary><span class="filter-label"><Tags :size="15"/><i>商品分类</i></span><b>{{ optionSummary(f.productCategoryIds,'全部分类') }}</b><ChevronDown :size="15"/></summary>
+        <div class="filter-popover">
+          <div class="filter-pop-search"><Search :size="14"/><input v-model="categoryQuery" placeholder="搜索商品分类"/></div>
+          <div class="filter-pop-actions"><button @click.prevent="f.productCategoryIds=[]">选择全部</button><span>{{ f.productCategoryIds.length }} 项已选</span></div>
+          <div class="filter-check-list"><label v-for="category in filteredCategories" :key="category.id"><input v-model="f.productCategoryIds" type="checkbox" :value="category.id" :disabled="loadingOptions"/><span>{{ category.name }}</span></label><div v-if="!filteredCategories.length" class="filter-empty">没有匹配分类</div></div>
+        </div>
+      </details>
+
+      <details class="filter-dropdown">
         <summary><span class="filter-label"><Warehouse :size="15"/><i>仓库</i></span><b>{{ optionSummary(f.warehouses,'全部仓库') }}</b><ChevronDown :size="15"/></summary>
         <div class="filter-popover">
           <div class="filter-pop-search"><Search :size="14"/><input v-model="warehouseQuery" placeholder="搜索仓库"/></div>
@@ -94,6 +105,7 @@ onMounted(()=>f.loadPresets())
 
     <div class="filter-foot">
       <span class="filter-scope-dot"></span><template v-if="showDate"><b>{{ f.dateLabel }}</b><span class="filter-divider"></span></template><span>{{ f.shops.length?`${f.shops.length}个店铺`:'全部店铺' }}</span><span>·</span><span>{{ f.warehouses.length?`${f.warehouses.length}个仓库`:'全部仓库' }}</span>
+      <template v-if="f.productCategoryIds.length"><span>·</span><span>已选 {{ f.productCategoryIds.length }} 个分类</span></template>
       <template v-if="f.productCodes.length"><span>·</span><span>指定 {{ f.productCodes.length }} 个商家编码</span></template>
       <template v-if="f.includeName"><span>·</span><span>包含“{{ f.includeName }}”</span></template>
       <template v-if="f.excludeName"><span>·</span><span>排除“{{ f.excludeName }}”</span></template>
@@ -106,6 +118,7 @@ onMounted(()=>f.loadPresets())
           <label class="full">预设名称<input v-model.trim="form.name" maxlength="64" placeholder="例如：临期泡菜检查" /></label>
           <label>店铺<select v-model="form.shops" multiple><option v-for="shop in shopOptions" :key="shop" :value="shop">{{ shop }}</option></select></label>
           <label>仓库<select v-model="form.warehouses" multiple><option v-for="warehouse in warehouseOptions" :key="warehouse" :value="warehouse">{{ warehouse }}</option></select></label>
+          <label>商品分类<select v-model="form.productCategoryIds" multiple><option v-for="category in productCategoryOptions" :key="category.id" :value="category.id">{{ category.name }}</option></select></label>
           <label class="full">指定商家编码<textarea v-model="form.productCodes" placeholder="多个编码用逗号、空格或换行分隔"></textarea></label>
           <label>商品名包含<textarea v-model="form.includeName" placeholder="泡菜, 海苔"></textarea></label>
           <label>商品名不包含<textarea v-model="form.excludeName" placeholder="赠品, 试吃, 测试"></textarea></label>

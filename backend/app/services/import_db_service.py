@@ -113,16 +113,19 @@ def _sync_product_categories(
     product_id: int,
     category_text: str | None,
 ):
-    if not category_text:
-        return
-
-    names = [
+    names = list(dict.fromkeys(
         x.strip()
-        for x in str(category_text)
+        for x in str(category_text or "")
         .replace("，", ",")
         .split(",")
         if x.strip()
-    ]
+    ))
+
+    # 商品资料是分类关系的唯一来源：重导时同步新增、删除和清空。
+    db.execute(
+        text("DELETE FROM product_category_relations WHERE product_id=:product_id"),
+        {"product_id": product_id},
+    )
 
     for name in names:
         row = db.execute(
@@ -146,9 +149,10 @@ def _sync_product_categories(
             )
             category_id = result.lastrowid
 
+        insert_ignore = "INSERT OR IGNORE" if db.get_bind().dialect.name == "sqlite" else "INSERT IGNORE"
         db.execute(
-            text("""
-                INSERT IGNORE INTO product_category_relations
+            text(f"""
+                {insert_ignore} INTO product_category_relations
                 (product_id, category_id)
                 VALUES(:product_id,:category_id)
             """),
@@ -219,7 +223,6 @@ def _ensure_schema_tables(db: Session) -> None:
     表缺失属于数据库结构版本不完整（migration 未执行），不应被当作几百条行级数据错误。
     """
     required = {
-        "product_name_aliases": "商品名称聚合表（migration 0152）",
         "import_changes": "回滚变更表",
         "import_errors": "导入错误明细表",
         "import_batches": "导入批次表",
@@ -301,25 +304,8 @@ def _get_or_create_product(db: Session, batch_id: int, row: dict[str, Any], data
         {"code": row["merchant_code"]},
     ).mappings().first()
     if existing:
-        incoming_name = str(row["product_name"]).strip()
-        canonical_name = str(existing["product_name"]).strip()
-        _touch_product_alias(db, int(existing["id"]), canonical_name, status="accepted")
-        if canonical_name != incoming_name:
-            pending = _touch_product_alias(db, int(existing["id"]), incoming_name, status="pending")
-            if pending:
-                warnings.append(
-                    RowError(
-                        row_no=row.get("row_no"),
-                        code="PRODUCT_NAME_ALIAS_PENDING",
-                        message=(
-                            f"商家编码 {row['merchant_code']} 已按唯一编码聚合；"
-                            f"当前规范名称={canonical_name}，发现名称变体={incoming_name}。管理员可在数据质量中确认规范名称。"
-                        ),
-                        raw_data=row,
-                    )
-                )
         if data_type == "product":
-            update_fields = {k: row.get(k) for k in ("spec", "brand", "category", "barcode")}
+            update_fields = {k: row.get(k) for k in ("product_name", "spec", "brand", "category", "barcode")}
             changed = any(update_fields[k] != existing[k] for k in update_fields)
             if changed:
                 before = {k: existing[k] for k in ("product_name", "spec", "brand", "category", "barcode", "import_batch_id")}
@@ -328,12 +314,13 @@ def _get_or_create_product(db: Session, batch_id: int, row: dict[str, Any], data
                     text(
                         """
                         UPDATE products
-                        SET spec=:spec,brand=:brand,category=:category,barcode=:barcode,import_batch_id=:batch_id
+                        SET product_name=:product_name,spec=:spec,brand=:brand,category=:category,barcode=:barcode,import_batch_id=:batch_id
                         WHERE id=:id
                         """
                     ),
                     {**update_fields, "batch_id": batch_id, "id": existing["id"]},
                 )
+            _sync_product_categories(db, int(existing["id"]), row.get("category"))
         return int(existing["id"])
 
     result = db.execute(
@@ -354,13 +341,9 @@ def _get_or_create_product(db: Session, batch_id: int, row: dict[str, Any], data
         },
     )
     product_id = int(result.lastrowid)
-    _sync_product_categories(
-    db,
-    product_id,
-    row.get("category"),
-    )
+    if data_type == "product":
+        _sync_product_categories(db, product_id, row.get("category"))
     _record_change(db, batch_id, "products", product_id, "inserted", None)
-    _touch_product_alias(db, product_id, row["product_name"], status="accepted")
     return product_id
 
 
@@ -775,6 +758,8 @@ def _restore_update(db: Session, table_name: str, row_pk: int, before: dict[str,
     assignments = ",".join(f"{k}=:{k}" for k in fields)
     payload["row_pk"] = row_pk
     db.execute(text(f"UPDATE {table_name} SET {assignments} WHERE id=:row_pk"), payload)
+    if table_name == "products":
+        _sync_product_categories(db, row_pk, payload.get("category"))
 
 
 def _restore_deleted(db: Session, table_name: str, before: dict[str, Any]) -> None:

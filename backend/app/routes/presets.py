@@ -18,6 +18,7 @@ class PresetBody(BaseModel):
     shops: list[str] = Field(default_factory=list)
     warehouses: list[str] = Field(default_factory=list)
     product_codes: list[str] = Field(default_factory=list)
+    product_category_ids: list[int] = Field(default_factory=list)
     include_name_keywords: list[str] = Field(default_factory=list)
     exclude_name_keywords: list[str] = Field(default_factory=list)
 

@@ -43,12 +43,10 @@ def _make_engine(include_aliases=True):
 
 
 class SchemaCheckTests(unittest.TestCase):
-    def test_missing_alias_table_raises_system_error(self):
+    def test_missing_legacy_alias_table_does_not_block_imports(self):
         engine = _make_engine(include_aliases=False)
         with Session(engine) as db:
-            with self.assertRaises(SystemImportError) as ctx:
-                _ensure_schema_tables(db)
-            self.assertEqual(ctx.exception.error_code, "DATABASE_SCHEMA_MISSING")
+            _ensure_schema_tables(db)
             db.close()
 
     def test_all_tables_present_passes(self):

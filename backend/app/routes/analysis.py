@@ -78,6 +78,7 @@ def inventory_analysis(
     high_cover_days: int = Query(90, ge=1, le=3650),
     stagnant_aging_days: int = Query(180, ge=1, le=3650),
     stagnant_cover_days: int = Query(180, ge=1, le=3650),
+    detail_warehouses: bool = False,
     actor: dict = Depends(require_actor),
     db: Session = Depends(get_db),
 ):
@@ -89,6 +90,7 @@ def inventory_analysis(
             high_cover_days=high_cover_days,
             stagnant_aging_days=stagnant_aging_days,
             stagnant_cover_days=stagnant_cover_days,
+            detail_warehouses=detail_warehouses,
         )
     except Exception as exc:
         _handle(exc)
@@ -102,6 +104,7 @@ def expiry_batches(
     include_name: str = "",
     exclude_name: str = "",
     product_codes: list[str] = Query(default=[]),
+    product_category_ids: list[int] = Query(default=[]),
     statuses: list[str] = Query(default=[]),
     remaining_days_min: int | None = None,
     remaining_days_max: int | None = None,
@@ -114,7 +117,7 @@ def expiry_batches(
     try:
         return get_expiry_batches(
             db,
-            _scope(actor["user_id"], department_code, 30, [], warehouses, product_search, include_name, exclude_name, product_codes),
+            _scope(actor["user_id"], department_code, 30, [], warehouses, product_search, include_name, exclude_name, product_codes, product_category_ids),
             statuses=tuple(statuses),
             remaining_days_min=remaining_days_min,
             remaining_days_max=remaining_days_max,
@@ -127,11 +130,15 @@ def expiry_batches(
 
 @router.get("/product-categories")
 def product_categories(
+    department_code: str = "B2C",
     actor: dict = Depends(require_actor),
     db: Session = Depends(get_db),
 ):
     try:
-        return list_product_categories(db)
+        return list_product_categories(
+            db,
+            DashboardScope(actor_user_id=actor["user_id"], department_code=department_code),
+        )
     except Exception as exc:
         _handle(exc)
 @router.get("/products/search")

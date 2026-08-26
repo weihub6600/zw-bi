@@ -258,7 +258,14 @@ def _aging_rows(db: Session, department_id: int) -> list[list[Any]]:
     return out
 
 
-def _build_xlsx(data_type: str, rows: list[list[Any]], department_code: str, *, write_only: bool = False) -> tuple[bytes, str, int, str]:
+def _build_xlsx(
+    data_type: str,
+    rows: list[list[Any]],
+    department_code: str,
+    *,
+    write_only: bool = False,
+    headers_override: list[str] | None = None,
+) -> tuple[bytes, str, int, str]:
     if not rows:
         # 空结果：不生成无意义 Excel，也不写 data_export 审计记录。
         raise ExportError("当前筛选条件下暂无可导出数据")
@@ -276,7 +283,7 @@ def _build_xlsx(data_type: str, rows: list[list[Any]], department_code: str, *, 
         headers, date_cols = EXPIRY_BATCH_HEADERS, {5, 6}
     else:
         raise ExportError(f"不支持的数据类型：{data_type}")
-    content = _make_workbook(headers, rows, date_cols, write_only=write_only)
+    content = _make_workbook(headers_override or headers, rows, date_cols, write_only=write_only)
     suffix = date.today().strftime('%Y%m%d')
     filename = f"{department_code}_{FILENAME_PREFIX[data_type]}_{suffix}.xlsx"
     ascii_filename = f"{department_code}_{FILENAME_ASCII[data_type]}_{suffix}.xlsx"
@@ -342,7 +349,7 @@ def export_sales(
     return {"content": content, "filename": filename, "ascii_filename": ascii_filename, "row_count": row_count}
 
 
-def _scope_from_params(actor_user_id: str, department_code: str, *, warehouses, product_search, include_name, exclude_name, product_codes, start_date=None, end_date=None, shops=(), days=30) -> DashboardScope:
+def _scope_from_params(actor_user_id: str, department_code: str, *, warehouses, product_search, include_name, exclude_name, product_codes, product_category_ids=(), start_date=None, end_date=None, shops=(), days=30) -> DashboardScope:
     return DashboardScope(
         actor_user_id=actor_user_id,
         department_code=department_code,
@@ -355,6 +362,7 @@ def _scope_from_params(actor_user_id: str, department_code: str, *, warehouses, 
         include_name=include_name or "",
         exclude_name=exclude_name or "",
         product_codes=tuple(product_codes or ()),
+        product_category_ids=tuple(product_category_ids or ()),
     )
 
 
@@ -370,7 +378,9 @@ def export_inventory_analysis(
     include_name: str = "",
     exclude_name: str = "",
     product_codes: Iterable[str] = (),
+    product_category_ids: Iterable[int] = (),
     category: str | None = None,
+    detail_warehouses: bool = False,
 ) -> dict[str, Any]:
     """导出库存明细（InventoryView 的 SKU 级库存健康度），复用 get_inventory_analysis 完整筛选与权限。"""
     scope = _scope_from_params(
@@ -378,10 +388,21 @@ def export_inventory_analysis(
         shops=shops, warehouses=warehouses, days=days,
         product_search=product_search, include_name=include_name,
         exclude_name=exclude_name, product_codes=product_codes,
+        product_category_ids=product_category_ids,
     )
-    result = get_inventory_analysis(db, scope, category=category)
+    result = get_inventory_analysis(
+        db, scope, category=category, detail_warehouses=detail_warehouses
+    )
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     rows = result["rows"]
+    warehouse_columns = result.get("meta", {}).get("warehouse_columns", [])
+    headers = INVENTORY_ANALYSIS_HEADERS
+    if detail_warehouses:
+        headers = [
+            "商家编码", "商品名称", "库存分类", *warehouse_columns,
+            "总库存", "近7天销量", "近14天销量", "近30天销量", "预测日均销量",
+            "可售天数", "加权库龄天数", "最大库龄天数",
+        ]
     data = [
         [
             r["sku"], r["name"], r["category_label"], _to_float(r["stock_qty"]),
@@ -391,7 +412,21 @@ def export_inventory_analysis(
         ]
         for r in rows
     ]
-    content, filename, row_count, ascii_filename = _build_xlsx("inventory_analysis", data, department["code"])
+    if detail_warehouses:
+        data = [
+            [
+                r["sku"], r["name"], r["category_label"],
+                *[_to_float(r.get("warehouse_stocks", {}).get(warehouse, 0)) for warehouse in warehouse_columns],
+                _to_float(r["stock_qty"]), _to_float(r["sales7"]), _to_float(r["sales14"]),
+                _to_float(r["sales30"]), _to_float(r["predicted_daily"]),
+                _to_float(r["cover_days"]), _to_float(r["weighted_aging_days"]),
+                _to_float(r["max_aging_days"]),
+            ]
+            for r in rows
+        ]
+    content, filename, row_count, ascii_filename = _build_xlsx(
+        "inventory_analysis", data, department["code"], headers_override=headers
+    )
     record_activity(
         db, int(actor["id"]), "data_export",
         department_id=int(department["id"]),
@@ -410,6 +445,7 @@ def export_expiry_batches(
     include_name: str = "",
     exclude_name: str = "",
     product_codes: Iterable[str] = (),
+    product_category_ids: Iterable[int] = (),
     statuses: Iterable[str] = (),
     remaining_days_min: int | None = None,
     remaining_days_max: int | None = None,
@@ -422,6 +458,7 @@ def export_expiry_batches(
         actor_user_id, department_code,
         warehouses=warehouses, product_search=product_search, include_name=include_name,
         exclude_name=exclude_name, product_codes=product_codes,
+        product_category_ids=product_category_ids,
     )
     result = get_expiry_batches(
         db, scope,

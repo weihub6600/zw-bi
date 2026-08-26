@@ -7,5 +7,3 @@ export const fetchImportBatch=batchNo=>apiRequest(`/api/imports/${encodeURICompo
 export const fetchImportIssues=(batchNo,{severity='',limit=200,offset=0}={})=>apiRequest(`/api/imports/${encodeURIComponent(batchNo)}/issues`,{params:{severity,limit,offset}})
 export const rollbackImport=batchNo=>apiRequest(`/api/imports/${encodeURIComponent(batchNo)}/rollback`,{method:'POST'})
 export const fetchLatestBusinessDate=({departmentCode=''}={})=>apiRequest('/api/imports/latest-business-date',{params:{department_code:currentDepartmentCode(departmentCode)}})
-export const fetchProductNameAliases=({departmentCode='',pendingOnly=false}={})=>apiRequest('/api/imports/product-name-aliases',{params:{department_code:currentDepartmentCode(departmentCode),pending_only:pendingOnly}})
-export const resolveProductNameAlias=(productId,{departmentCode='',canonicalName})=>apiRequest(`/api/imports/product-name-aliases/${encodeURIComponent(productId)}/resolve`,{method:'POST',body:{department_code:currentDepartmentCode(departmentCode),canonical_name:canonicalName}})

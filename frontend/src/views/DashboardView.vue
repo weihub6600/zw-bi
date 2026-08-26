@@ -14,6 +14,7 @@ const data = ref(null)
 const inventoryData = ref(null)
 const shopOptions = ref([])
 const warehouseOptions = ref([])
+const productCategoryOptions = ref([])
 const activeRank = ref('sales')
 const chartEl = ref(null)
 const structureChartEl = ref(null)
@@ -78,6 +79,7 @@ async function loadOptions() {
     const result = await fetchDashboardOptions({ departmentCode:f.departmentCode })
     shopOptions.value = result.shops || []
     warehouseOptions.value = result.warehouses || []
+    productCategoryOptions.value = result.product_categories || []
   } catch (e) {
     error.value = `筛选项读取失败：${e.message}`
   } finally {
@@ -100,7 +102,8 @@ async function loadDashboard() {
       productSearch: f.productSearch,
       includeName: f.includeName,
       excludeName: f.excludeName,
-      productCodes: f.productCodes
+      productCodes: f.productCodes,
+      productCategoryIds: f.productCategoryIds
     })
     if (serial !== requestSerial) return
     data.value = result
@@ -113,7 +116,8 @@ async function loadDashboard() {
         productSearch: f.productSearch,
         includeName: f.includeName,
         excludeName: f.excludeName,
-        productCodes: f.productCodes
+        productCodes: f.productCodes,
+        productCategoryIds: f.productCategoryIds
       })
     } catch {
       inventoryData.value = null
@@ -193,7 +197,7 @@ function renderChart() {
 function onResize() { chart?.resize(); structureChart?.resize() }
 
 watch(
-  () => [f.departmentCode, f.dateRange, f.customStart, f.customEnd, JSON.stringify(f.shops), JSON.stringify(f.warehouses), f.productSearch, f.includeName, f.excludeName, JSON.stringify(f.productCodes), f.activePreset],
+  () => [f.departmentCode, f.dateRange, f.customStart, f.customEnd, JSON.stringify(f.shops), JSON.stringify(f.warehouses), JSON.stringify(f.productCategoryIds), f.productSearch, f.includeName, f.excludeName, JSON.stringify(f.productCodes), f.activePreset],
   scheduleLoad
 )
 watch(() => showPrice.value, () => nextTick(renderChart))
@@ -219,7 +223,7 @@ onBeforeUnmount(() => {
       <h1>经营总览</h1>
       <p>销售、库存、补货、效期与待办风险一屏查看 · 数据来自 MySQL</p>
     </div>
-    <FilterBar :shop-options="shopOptions" :warehouse-options="warehouseOptions" :loading-options="optionsLoading" />
+    <FilterBar :shop-options="shopOptions" :warehouse-options="warehouseOptions" :product-category-options="productCategoryOptions" :loading-options="optionsLoading" />
 
     <div v-if="error" class="api-error">
       <b>真实数据接口暂不可用</b><span>{{ error }}</span>

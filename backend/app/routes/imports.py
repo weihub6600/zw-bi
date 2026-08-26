@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -23,9 +22,7 @@ from ..services.import_db_service import (
     import_batch_issues,
     import_file,
     latest_business_date,
-    product_name_aliases,
     recent_batches,
-    resolve_product_name_alias,
     rollback_batch,
 )
 from ..services.import_parser import ImportValidationError, parse_import_file, parsed_preview, sha256_file
@@ -33,11 +30,6 @@ from ..services.permission_service import ActorNotFound, PermissionDenied, asser
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 DataType = Literal["sales", "inventory", "product", "aging"]
-
-
-class ResolveProductNameBody(BaseModel):
-    department_code: str = "B2C"
-    canonical_name: str
 
 
 
@@ -234,35 +226,6 @@ def list_recent_imports(
     try:
         return {"items": recent_batches(db, department_code, actor["user_id"], min(max(limit, 1), 200))}
     except Exception as exc:
-        _handle_error(exc)
-
-
-@router.get("/product-name-aliases")
-def list_product_name_aliases(
-    department_code: str = "B2C",
-    pending_only: bool = False,
-    actor: dict = Depends(require_actor),
-    db: Session = Depends(get_db),
-):
-    try:
-        return product_name_aliases(db, department_code, actor["user_id"], pending_only=pending_only)
-    except Exception as exc:
-        _handle_error(exc)
-
-
-@router.post("/product-name-aliases/{product_id}/resolve")
-def resolve_product_name(
-    product_id: int,
-    body: ResolveProductNameBody,
-    actor: dict = Depends(require_actor),
-    db: Session = Depends(get_db),
-):
-    try:
-        return resolve_product_name_alias(
-            db, body.department_code, actor["user_id"], product_id, body.canonical_name
-        )
-    except Exception as exc:
-        db.rollback()
         _handle_error(exc)
 
 

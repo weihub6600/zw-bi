@@ -810,6 +810,7 @@ def get_dashboard(db: Session, scope: DashboardScope) -> dict[str, Any]:
         include_name=scope.include_name,
         exclude_name=scope.exclude_name,
         product_codes=tuple(scope.product_codes),
+        product_category_ids=tuple(scope.product_category_ids),
     )
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     department_id = int(department["id"])

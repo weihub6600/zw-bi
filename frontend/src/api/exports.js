@@ -74,7 +74,7 @@ export function exportAging(departmentCode) {
   return downloadFile({ path: '/api/exports/aging', params: { department_code: departmentCode } })
 }
 
-export function exportInventoryAnalysis({ departmentCode, shops, warehouses, days, productSearch, includeName, excludeName, productCodes, category }) {
+export function exportInventoryAnalysis({ departmentCode, shops, warehouses, days, productSearch, includeName, excludeName, productCodes, productCategoryIds, category, detailWarehouses }) {
   return downloadFile({
     path: '/api/exports/inventory-analysis',
     params: {
@@ -86,12 +86,14 @@ export function exportInventoryAnalysis({ departmentCode, shops, warehouses, day
       include_name: includeName,
       exclude_name: excludeName,
       product_codes: (productCodes || []).join(','),
+      product_category_ids: (productCategoryIds || []).join(','),
       category: category || '',
+      detail_warehouses: detailWarehouses || undefined,
     },
   })
 }
 
-export function exportExpiryBatches({ departmentCode, warehouses, productSearch, includeName, excludeName, productCodes, statuses, remainingDaysMin, remainingDaysMax, remainingPctMin, remainingPctMax }) {
+export function exportExpiryBatches({ departmentCode, warehouses, productSearch, includeName, excludeName, productCodes, productCategoryIds, statuses, remainingDaysMin, remainingDaysMax, remainingPctMin, remainingPctMax }) {
   return downloadFile({
     path: '/api/exports/expiry-batches',
     params: {
@@ -101,6 +103,7 @@ export function exportExpiryBatches({ departmentCode, warehouses, productSearch,
       include_name: includeName,
       exclude_name: excludeName,
       product_codes: (productCodes || []).join(','),
+      product_category_ids: (productCategoryIds || []).join(','),
       statuses: (statuses || []).join(','),
       remaining_days_min: remainingDaysMin,
       remaining_days_max: remainingDaysMax,

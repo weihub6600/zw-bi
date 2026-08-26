@@ -36,6 +36,21 @@ def normalize_string_list(values: list[str] | tuple[str, ...] | None) -> list[st
     return result
 
 
+def normalize_int_list(values: list[int] | tuple[int, ...] | None) -> list[int]:
+    result: list[int] = []
+    seen: set[int] = set()
+    for raw in values or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0 or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def _public(row: dict[str, Any]) -> dict[str, Any]:
     product_filter = _json_value(row.get("product_filter"), {})
     return {
@@ -44,6 +59,7 @@ def _public(row: dict[str, Any]) -> dict[str, Any]:
         "shops": normalize_string_list(_json_value(row.get("shop_filter"), [])),
         "warehouses": normalize_string_list(_json_value(row.get("warehouse_filter"), [])),
         "product_codes": normalize_string_list(product_filter.get("merchant_codes", [])),
+        "product_category_ids": normalize_int_list(product_filter.get("category_ids", [])),
         "include_name_keywords": normalize_string_list(_json_value(row.get("include_name_keywords"), [])),
         "exclude_name_keywords": normalize_string_list(_json_value(row.get("exclude_name_keywords"), [])),
         "updated_at": str(row.get("updated_at") or ""),
@@ -75,6 +91,7 @@ def save_preset(
     shops: list[str],
     warehouses: list[str],
     product_codes: list[str],
+    product_category_ids: list[int],
     include_name_keywords: list[str],
     exclude_name_keywords: list[str],
     preset_id: int | None = None,
@@ -92,7 +109,10 @@ def save_preset(
         "name": clean_name,
         "shops": json.dumps(normalize_string_list(shops), ensure_ascii=False),
         "warehouses": json.dumps(normalize_string_list(warehouses), ensure_ascii=False),
-        "product_filter": json.dumps({"merchant_codes": normalize_string_list(product_codes)}, ensure_ascii=False),
+        "product_filter": json.dumps({
+            "merchant_codes": normalize_string_list(product_codes),
+            "category_ids": normalize_int_list(product_category_ids),
+        }, ensure_ascii=False),
         "include": json.dumps(normalize_string_list(include_name_keywords), ensure_ascii=False),
         "exclude": json.dumps(normalize_string_list(exclude_name_keywords), ensure_ascii=False),
         "user_pk": actor["id"],
