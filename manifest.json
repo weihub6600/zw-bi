@@ -1,10 +1,10 @@
 {
   "app": "百嘉瑞BI",
-  "version": "15.7.0",
+  "version": "15.7.1",
   "files": {
     ".env.example": "f5ae8301c55a2a95ab23c90d27859d2cef5549b9ed6d4784f32082c91642e219",
-    "README_DEPLOY.txt": "6371f7de278278229ed82f88530a70bfdc13d1c17cb526c713174dbdff2e91ed",
-    "VERSION": "c0aadeb716ea9fdefb9d108a182d8f64b5c42da607326a558ab19f85d456a991",
+    "README_DEPLOY.txt": "8ac9182145ee404bb8094a2bd428a3937eb1ab7008f4efc09ee89f921e11b2f2",
+    "VERSION": "1a607da418c61b234743e8c038a946f7efa9f0b5fd36aa71377eeccf8c0d2fb0",
     "backend/app/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "backend/app/cli/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "backend/app/cli/bootstrap_admin.py": "f9c4648b205fd2b9d985897ceca996f069bbdbe7c894fba4765d4833f7b5ab94",
@@ -78,7 +78,7 @@
     "backend/tests/test_v14_7_department_setup.py": "0c0af34203a47bfc6446b32814529c6e75eab4ef46546b4f6016f2b19fac691e",
     "backend/tests/test_v15_3_updates.py": "3ef50b370636ba56b27753ba28be1b7a1422bb0acee52194d23ce6d14a96bee8",
     "backend/tests/test_v15_4_updates.py": "237aa34ceabafe2ce3c192f1e1b50a8a2d4ad99a6cd372872de7552c1011bda8",
-    "backend/tests/test_v15_7_product_categories.py": "a2589e71181da4cdf418001d1415823c1219088999fcb1d5fa068ff7e1a1a2b5",
+    "backend/tests/test_v15_7_product_categories.py": "78f16ccc01e5619b1a26def27317e7a19a4598a89a9b9bf5909f5d9f654b9db0",
     "deploy/baota/check_release.sh": "8073b8c54fd2730624521be7524da866ba6ef96c143bde1232602688c97b1fe1",
     "deploy/baota/nginx.conf.example": "0c9d0df218054d54c38d16c9cd2b3f23959356824c627c4481966232fd6c3be4",
     "deploy/baota/rollback.sh": "1371c2dd90d93ad30602cc007c70f3537191365021c0a7d5ca5124ebc7fa1d80",
@@ -97,6 +97,6 @@
     "frontend-dist/templates/库龄模板.xlsx": "94247aa99a67e2b026a3121b090494d2c6a15433956be043e6c64add3f4b4d57",
     "frontend-dist/templates/销量数据模板.xlsx": "b3df435f10c6131d1a76b715051340090208c9fbb3db28cb300975c787cc5905",
     "install.sh": "797aacaa71d1fbd5e8697021acd7945db9543856d65c6c77f8bf77aa6c97f74a",
-    "scripts/release_tool.py": "7f88f9cf03a9881bae8a750e6b1aff23fed84b8eedaee17a43423fa1c2f4d96e"
+    "scripts/release_tool.py": "21e33f2e631487e510eb3d2e3777a6bf33a6fcbc262d3749372888d43979a248"
   }
 }

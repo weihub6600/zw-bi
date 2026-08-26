@@ -68,6 +68,11 @@ class ProductCategoryCompletionTests(unittest.TestCase):
         self.assertIn("v-if=\"showYesterdaySales\"", product)
         self.assertIn("昨日销量", product)
 
+    def test_migrations_use_legacy_utf8mb4_collation_for_json_values(self):
+        root = Path(__file__).resolve().parents[1]
+        release_tool = (root.parent / "scripts" / "release_tool.py").read_text(encoding="utf-8")
+        self.assertIn("SET NAMES utf8mb4 COLLATE utf8mb4_general_ci", release_tool)
+
 
 if __name__ == "__main__":
     unittest.main()

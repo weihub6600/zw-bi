@@ -1,5 +1,5 @@
 Baijiarui BI fnOS/BaoTa production package
-Version: 15.7.0
+Version: 15.7.1
 
 First install:
   chmod +x install.sh

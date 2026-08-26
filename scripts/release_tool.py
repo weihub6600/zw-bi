@@ -155,6 +155,9 @@ def bootstrap_migration_table(conn):
 
 def apply_sql(conn, sql: str):
     with conn.cursor() as cur:
+        # 历史库可能仍使用 utf8mb4_general_ci；JSON_TABLE 的字符串结果会继承连接排序规则。
+        # 统一会话排序规则，避免迁移中比较旧列与 JSON 值时出现 collation conflict。
+        cur.execute("SET NAMES utf8mb4 COLLATE utf8mb4_general_ci")
         cur.execute(sql)
         while cur.nextset():
             pass
