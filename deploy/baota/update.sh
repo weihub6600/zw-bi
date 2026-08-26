@@ -13,6 +13,24 @@ export BJR_ENV_FILE="$APP_ROOT/shared/.env"
 PY="$APP_ROOT/.venv/bin/python"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP="$APP_ROOT/shared/backups/db_${OLD_VERSION:-unknown}_before_${NEW_VERSION}_$STAMP.sql"
+SUPERVISOR_PROGRAM="${BJR_SUPERVISOR_PROGRAM:-baijiarui-bi}"
+SUPERVISOR_MANAGED=false
+if command -v supervisorctl >/dev/null 2>&1; then
+  SUPERVISOR_STATUS="$(supervisorctl status "$SUPERVISOR_PROGRAM" 2>&1 || true)"
+  if printf '%s\n' "$SUPERVISOR_STATUS" | grep -q "^$SUPERVISOR_PROGRAM[[:space:]]"; then
+    SUPERVISOR_MANAGED=true
+  fi
+fi
+
+stop_backend(){
+  if [ "$SUPERVISOR_MANAGED" = true ]; then supervisorctl stop "$SUPERVISOR_PROGRAM" || true
+  else APP_ROOT="$APP_ROOT" bash "$OLD_RELEASE/deploy/baota/service.sh" stop || true; fi
+}
+
+start_backend(){
+  if [ "$SUPERVISOR_MANAGED" = true ]; then supervisorctl start "$SUPERVISOR_PROGRAM"
+  else APP_ROOT="$APP_ROOT" bash "$1/deploy/baota/service.sh" restart; fi
+}
 
 echo "=== 百嘉瑞BI 升级 ${OLD_VERSION:-unknown} -> $NEW_VERSION ==="
 [ -f "$APP_ROOT/shared/.env" ] || { echo "缺少 shared/.env"; exit 2; }
@@ -22,7 +40,7 @@ echo "=== 百嘉瑞BI 升级 ${OLD_VERSION:-unknown} -> $NEW_VERSION ==="
 "$PY" "$SOURCE_DIR/scripts/release_tool.py" db-ping
 mkdir -p "$APP_ROOT/shared/backups" "$APP_ROOT/releases"
 "$PY" "$SOURCE_DIR/scripts/release_tool.py" backup-db "$BACKUP"
-APP_ROOT="$APP_ROOT" bash "$OLD_RELEASE/deploy/baota/service.sh" stop || true
+stop_backend
 rm -rf "$NEW_RELEASE"; mkdir -p "$NEW_RELEASE"
 for x in backend frontend-dist templates deploy scripts VERSION manifest.json; do [ -e "$SOURCE_DIR/$x" ] && cp -a "$SOURCE_DIR/$x" "$NEW_RELEASE/"; done
 
@@ -30,7 +48,7 @@ rollback(){
   echo "升级失败，开始自动回滚..."
   [ -n "$OLD_RELEASE" ] && ln -sfn "$OLD_RELEASE" "$CURRENT_LINK"
   "$PY" "$OLD_RELEASE/scripts/release_tool.py" restore-db "$BACKUP" || true
-  APP_ROOT="$APP_ROOT" bash "$OLD_RELEASE/deploy/baota/service.sh" restart || true
+  start_backend "$OLD_RELEASE" || true
   "$PY" "$OLD_RELEASE/scripts/release_tool.py" record-release rollback success --from-version "$NEW_VERSION" --backup-path "$BACKUP" --note "automatic rollback after failed upgrade" || true
 }
 trap rollback ERR
@@ -38,7 +56,7 @@ trap rollback ERR
 "$PY" -m pip install -r "$NEW_RELEASE/backend/requirements.txt"
 "$PY" "$NEW_RELEASE/scripts/release_tool.py" migrate
 ln -sfn "$NEW_RELEASE" "$CURRENT_LINK"
-APP_ROOT="$APP_ROOT" bash "$NEW_RELEASE/deploy/baota/service.sh" restart
+start_backend "$NEW_RELEASE"
 sleep 3
 HEALTH="$(curl -fsS http://127.0.0.1:8000/api/health)"
 echo "$HEALTH"

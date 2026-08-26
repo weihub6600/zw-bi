@@ -63,7 +63,8 @@ class ProductCategoryCompletionTests(unittest.TestCase):
         product = (root.parent / "frontend" / "src" / "views" / "ProductView.vue").read_text(encoding="utf-8")
         self.assertIn("AS sales_yesterday", analysis)
         self.assertIn('"shop_sales_options": shop_sales_options', analysis)
-        self.assertIn("v-model=\"f.shops\"", product)
+        self.assertIn("toggleShop(r.shop,$event)", product)
+        self.assertIn("applyShopSelection", product)
         self.assertIn("yesterday_sales_available", analysis)
         self.assertIn("v-if=\"showYesterdaySales\"", product)
         self.assertIn("昨日销量", product)
@@ -72,6 +73,13 @@ class ProductCategoryCompletionTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         release_tool = (root.parent / "scripts" / "release_tool.py").read_text(encoding="utf-8")
         self.assertIn("SET NAMES utf8mb4 COLLATE utf8mb4_general_ci", release_tool)
+
+    def test_baota_upgrade_uses_supervisor_when_configured(self):
+        root = Path(__file__).resolve().parents[1]
+        update_script = (root.parent / "deploy" / "baota" / "update.sh").read_text(encoding="utf-8")
+        self.assertIn("SUPERVISOR_PROGRAM", update_script)
+        self.assertIn("supervisorctl stop", update_script)
+        self.assertIn("supervisorctl start", update_script)
 
 
 if __name__ == "__main__":
