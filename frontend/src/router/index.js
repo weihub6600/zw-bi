@@ -8,6 +8,7 @@ import DataCenterView from '../views/DataCenterView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import LoginView from '../views/LoginView.vue'
 import SetupView from '../views/SetupView.vue'
+import TcCalculatorView from '../views/TcCalculatorView.vue'
 import { fetchSetupStatus } from '../api/setup'
 import { useAuthStore } from '../stores/auth'
 const routes=[
@@ -19,6 +20,7 @@ const routes=[
   {path:'/expiry',component:ExpiryView,meta:{title:'效期批次'}},
   {path:'/todo',component:TodoView,meta:{title:'待办任务'}},
   {path:'/data-center',component:DataCenterView,meta:{title:'数据中心'}},
+  {path:'/tools/tc',component:TcCalculatorView,meta:{title:'TC计算器'}},
   {path:'/settings',component:SettingsView,meta:{title:'系统设置'}}
 ]
 const router=createRouter({history:createWebHistory(),routes})

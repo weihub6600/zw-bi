@@ -1,10 +1,8 @@
 {
   "app": "百嘉瑞BI",
-  "version": "15.7.2",
+  "version": "15.7.3",
   "files": {
     ".env.example": "f5ae8301c55a2a95ab23c90d27859d2cef5549b9ed6d4784f32082c91642e219",
-    "README_DEPLOY.txt": "4bda8a4af3dc4a2c59b35e3e233609e7bf731d708311dbdbe25a5cb816599365",
-    "VERSION": "8664e3b6ad990ca7691cd49688267cc7e2e765a77404608882d8e7ef067bf8ce",
     "backend/app/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "backend/app/cli/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "backend/app/cli/bootstrap_admin.py": "f9c4648b205fd2b9d985897ceca996f069bbdbe7c894fba4765d4833f7b5ab94",
@@ -85,18 +83,21 @@
     "deploy/baota/service.sh": "2aa639833cbccb4e661ccf9a57d3b29a952d6b56406ea3a83bd7c26b456c97f9",
     "deploy/baota/update.sh": "684eae5ce96bde7c2a5c0884521d9f755ac4db7cf3919aabb5c9e54fd3e0287c",
     "frontend-dist/404.html": "301bd9f16f94feedfae7a946a14bac38cb73c43efe6117bc5586835af03d7d6f",
-    "frontend-dist/assets/index-BTSr2WgW.css": "590d1917631ed36b359fc5e5ecc681d0c303d06886d023a40cb17fb06131a661",
-    "frontend-dist/assets/index-DdzSaTQh.js": "ea5e7448d20997a5f92c18cfadf86e4120bfc994a4bbe8de01789089427f0c5f",
-    "frontend-dist/index.html": "ff52d2222b16a7392b7d5a67567ee7f9d2518410a3cf473409ecff2ba0ee4d71",
+    "frontend-dist/assets/index-DDmx0r-c.js": "917f37014150049ab415112f54a02f100702b91e19206d92c7cc2e4ddb52be8f",
+    "frontend-dist/assets/index-DliuUqyU.css": "06ea7f3d2a43bae1f4e993e140f8a0a558a44092fb5e10e483c094aa1f393b99",
+    "frontend-dist/index.html": "95df3d7b2a46f43181858d3f1caf5afaa35c0b0b35cfbc2593a8bf5b05fe5670",
+    "frontend-dist/tc-data.json": "74e5e5415ab10bbbc1355371c5cd16976717c2dadf9863b01267050f471a33c6",
+    "frontend-dist/templates/库存效期模板.xlsx": "a3d9a66fbf237e4d6cd61085d66d33045ce01723439908485eeda19b54dd6cd9",
+    "frontend-dist/templates/库龄模板.xlsx": "94247aa99a67e2b026a3121b090494d2c6a15433956be043e6c64add3f4b4d57",
+    "frontend-dist/templates/商品资料模板.xlsx": "ef1f7d484189262bbfa346b06b333401481bba356ff1635020848e762ea3132d",
+    "frontend-dist/templates/销量数据模板.xlsx": "b3df435f10c6131d1a76b715051340090208c9fbb3db28cb300975c787cc5905",
     "frontend-dist/templates/aging_snapshot.xlsx": "94247aa99a67e2b026a3121b090494d2c6a15433956be043e6c64add3f4b4d57",
     "frontend-dist/templates/inventory_expiry.xlsx": "a3d9a66fbf237e4d6cd61085d66d33045ce01723439908485eeda19b54dd6cd9",
     "frontend-dist/templates/product_master.xlsx": "ef1f7d484189262bbfa346b06b333401481bba356ff1635020848e762ea3132d",
     "frontend-dist/templates/sales_daily.xlsx": "b3df435f10c6131d1a76b715051340090208c9fbb3db28cb300975c787cc5905",
-    "frontend-dist/templates/商品资料模板.xlsx": "ef1f7d484189262bbfa346b06b333401481bba356ff1635020848e762ea3132d",
-    "frontend-dist/templates/库存效期模板.xlsx": "a3d9a66fbf237e4d6cd61085d66d33045ce01723439908485eeda19b54dd6cd9",
-    "frontend-dist/templates/库龄模板.xlsx": "94247aa99a67e2b026a3121b090494d2c6a15433956be043e6c64add3f4b4d57",
-    "frontend-dist/templates/销量数据模板.xlsx": "b3df435f10c6131d1a76b715051340090208c9fbb3db28cb300975c787cc5905",
     "install.sh": "797aacaa71d1fbd5e8697021acd7945db9543856d65c6c77f8bf77aa6c97f74a",
-    "scripts/release_tool.py": "21e33f2e631487e510eb3d2e3777a6bf33a6fcbc262d3749372888d43979a248"
+    "README_DEPLOY.txt": "4bda8a4af3dc4a2c59b35e3e233609e7bf731d708311dbdbe25a5cb816599365",
+    "scripts/release_tool.py": "21e33f2e631487e510eb3d2e3777a6bf33a6fcbc262d3749372888d43979a248",
+    "VERSION": "d6188319994cd92a56ceb7273fe26b7cd3c2e55c1fd77bf593c7afeaf13a8587"
   }
 }
