@@ -10,6 +10,7 @@ import LoginView from '../views/LoginView.vue'
 import SetupView from '../views/SetupView.vue'
 import TcCalculatorView from '../views/TcCalculatorView.vue'
 import JpCalculatorView from '../views/JpCalculatorView.vue'
+import YunCangCalculatorView from '../views/YunCangCalculatorView.vue'
 import { fetchSetupStatus } from '../api/setup'
 import { useAuthStore } from '../stores/auth'
 const routes=[
@@ -23,6 +24,7 @@ const routes=[
   {path:'/data-center',component:DataCenterView,meta:{title:'数据中心'}},
   {path:'/tools/tc',component:TcCalculatorView,meta:{title:'TC计算器'}},
   {path:'/tools/jp',component:JpCalculatorView,meta:{title:'京配计算器'}},
+  {path:'/tools/yuncang',component:YunCangCalculatorView,meta:{title:'云仓计算器'}},
   {path:'/settings',component:SettingsView,meta:{title:'系统设置'}}
 ]
 const router=createRouter({history:createWebHistory(),routes})
