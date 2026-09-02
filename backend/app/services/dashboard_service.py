@@ -208,12 +208,19 @@ def _scope_clauses(
 ) -> list[str]:
     clauses: list[str] = []
 
-    if scope.product_search.strip():
-        params["product_search"] = f"%{scope.product_search.strip().lower()}%"
-        clauses.append(
-            f"(LOWER({product_alias}.product_name) LIKE :product_search "
-            f"OR LOWER({product_alias}.merchant_code) LIKE :product_search)"
-        )
+    search_keywords = [x.lower() for x in parse_keywords(scope.product_search)]
+    if search_keywords:
+        parts = []
+        for i, keyword in enumerate(search_keywords):
+            key = f"product_search_{i}"
+            params[key] = f"%{keyword}%"
+            parts.append(
+                f"(LOWER({product_alias}.product_name) LIKE :{key} "
+                f"OR LOWER({product_alias}.merchant_code) LIKE :{key} "
+                f"OR LOWER(COALESCE({product_alias}.spec,'')) LIKE :{key} "
+                f"OR LOWER(COALESCE({product_alias}.brand,'')) LIKE :{key})"
+            )
+        clauses.append("(" + " AND ".join(parts) + ")")
 
     if scope.product_codes:
         placeholders = []

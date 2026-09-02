@@ -221,7 +221,7 @@ onBeforeUnmount(() => {
   <div class="page">
     <div class="page-title">
       <h1>经营总览</h1>
-      <p>销售、库存、补货、效期与待办风险一屏查看 · 数据来自 MySQL</p>
+      <p>销售、库存、补货、效期与待办风险一屏查看 · 数据来自本地NAS</p>
     </div>
     <FilterBar :shop-options="shopOptions" :warehouse-options="warehouseOptions" :product-category-options="productCategoryOptions" :loading-options="optionsLoading" />
 
@@ -229,7 +229,7 @@ onBeforeUnmount(() => {
       <b>真实数据接口暂不可用</b><span>{{ error }}</span>
       <button @click="loadDashboard">重新读取</button>
     </div>
-    <div v-else-if="loading && !data" class="dashboard-loading">正在从 MySQL 聚合经营数据…</div>
+    <div v-else-if="loading && !data" class="dashboard-loading">正在从本地NAS聚合经营数据…</div>
 
     <template v-if="data">
       <section class="data-scope-bar">

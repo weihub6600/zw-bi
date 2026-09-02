@@ -19,6 +19,7 @@ from .dashboard_service import (
     _safe_expiry_status,
     _sales_rows,
     _scope_clauses,
+    parse_keywords,
     _where,
     selected_sales_range,
     sales_period_comparison,
@@ -424,14 +425,31 @@ def search_products(
     limit: int = 20,
     category_id: int | None = None,
 ) -> dict[str, Any]:
-    """按商家编码或当前商品名搜索；分类可单独用于浏览商品。"""
+    """按商品名、规格、品牌或商家编码搜索；分类可单独用于浏览商品。"""
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     q = query.strip()
     if not q and category_id is None:
         return {"rows": [], "query": "", "department": {"code": department["code"], "name": department["name"]}}
     department_id = int(department["id"])
     cap = max(1, min(int(limit), 30))
-    like = f"%{q.lower()}%"
+    keywords = [x.lower() for x in parse_keywords(q)]
+    # 多个空格分隔的关键词按 AND 处理：每个关键词都必须命中商品名或商家编码。
+    search_clauses = []
+    params: dict[str, Any] = {
+        "department_id": department_id,
+        "exact": q.lower(),
+        "prefix": f"{q.lower()}%",
+        "query_empty": 1 if not q else 0,
+        "category_id": category_id,
+    }
+    for i, keyword in enumerate(keywords):
+        key = f"search_{i}"
+        params[key] = f"%{keyword}%"
+        search_clauses.append(
+            f"(LOWER(p.merchant_code) LIKE :{key} OR LOWER(p.product_name) LIKE :{key} "
+            f"OR LOWER(COALESCE(p.spec,'')) LIKE :{key} OR LOWER(COALESCE(p.brand,'')) LIKE :{key})"
+        )
+    search_sql = " AND ".join(search_clauses) if search_clauses else "1=1"
     rows = db.execute(
         text(
             f"""
@@ -445,8 +463,7 @@ def search_products(
             FROM products p
             WHERE (
                    :query_empty=1
-                   OR LOWER(p.merchant_code) LIKE :like
-                   OR LOWER(p.product_name) LIKE :like
+                   OR ({search_sql})
                    )
               AND (
                 EXISTS(SELECT 1 FROM sales_daily sd WHERE sd.department_id=:department_id AND sd.product_id=p.id)
@@ -468,14 +485,7 @@ def search_products(
             LIMIT {cap}
             """
         ),
-{
-"department_id": department_id,
-"like": like,
-"exact": q.lower(),
-"prefix": f"{q.lower()}%",
-"query_empty": 1 if not q else 0,
-"category_id": category_id,
-}
+params
     ).mappings().all()
     return {
         "query": q,

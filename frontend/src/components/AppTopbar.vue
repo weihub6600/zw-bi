@@ -5,6 +5,7 @@ import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
 import { useFilterStore } from '../stores/filter'
 const ui=useUiStore(),auth=useAuthStore(),filters=useFilterStore(),router=useRouter(),route=useRoute()
+const userInitial=()=>String(auth.user?.username||'U').trim().slice(0,1).toUpperCase()
 function changeDepartment(e){const code=e.target.value;const m=auth.memberships.find(x=>x.code===code);auth.setDepartment(code);filters.setDepartment(code,m?.name||'')}
 async function signOut(){await auth.logout();router.replace('/login')}
 </script>
@@ -21,9 +22,13 @@ async function signOut(){await auth.logout();router.replace('/login')}
       </div>
     </div>
     <div class="topbar-actions">
-      <button class="icon-button" @click="ui.toggleTheme" title="切换深浅背景"><Sun v-if="ui.theme==='dark'" :size="18"/><Moon v-else :size="18"/></button>
-      <div class="user-chip"><span>{{ auth.user?.username }}</span><small>{{ auth.roleLabel }}</small></div>
-      <button class="icon-button" @click="signOut" title="退出登录"><LogOut :size="17"/></button>
+      <button class="icon-button topbar-action theme-button" @click="ui.toggleTheme" title="切换深浅背景"><Sun v-if="ui.theme==='dark'" :size="17"/><Moon v-else :size="17"/></button>
+      <div class="topbar-user">
+        <span class="topbar-avatar">{{ userInitial() }}</span>
+        <span class="topbar-user-status"></span>
+        <div class="topbar-user-copy"><b>{{ auth.user?.username || '当前用户' }}</b><small>{{ auth.roleLabel }}</small></div>
+      </div>
+      <button class="icon-button topbar-action logout-button" @click="signOut" title="退出登录"><LogOut :size="17"/></button>
     </div>
   </header>
 </template>

@@ -261,7 +261,7 @@ onMounted(async()=>{
     <div class="page-title dc-title">
       <div>
         <h1>数据中心</h1>
-        <p>本地 Excel / CSV → 校验预览 → MySQL；不连接旺店通外部 OpenAPI</p>
+        <p>本地 Excel / CSV → 校验预览 → 本地NAS；不连接旺店通外部 OpenAPI</p>
       </div>
       <div class="local-only-badge"><ShieldCheck :size="16" /> 局域网本地导入</div>
     </div>
@@ -314,7 +314,7 @@ onMounted(async()=>{
 
           <div class="dc-form-actions">
             <button class="dc-button secondary" :disabled="previewLoading" @click="runPreview"><FileCheck2 :size="16" />{{ previewLoading?'正在校验…':'② 校验并预览' }}</button>
-            <button class="dc-button primary" :disabled="!commitAllowed || commitLoading" @click="runCommit"><Database :size="16" />{{ commitLoading?'正在写入…':'③ 确认写入 MySQL' }}</button>
+            <button class="dc-button primary" :disabled="!commitAllowed || commitLoading" @click="runCommit"><Database :size="16" />{{ commitLoading?'正在写入…':'③ 确认写入本地NAS' }}</button>
           </div>
         </section>
 

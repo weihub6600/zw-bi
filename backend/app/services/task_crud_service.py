@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+import re
 from typing import Any
 
 from sqlalchemy import bindparam, text
@@ -615,9 +616,17 @@ def list_tasks(
     if status:
         clauses.append("t.status=:status")
         params["status"] = status
-    if product_search.strip():
-        params["product_search"] = f"%{product_search.strip().lower()}%"
-        clauses.append("(LOWER(p.product_name) LIKE :product_search OR LOWER(p.merchant_code) LIKE :product_search)")
+    search_keywords = [x.lower() for x in re.split(r"[,，\s]+", product_search) if x.strip()]
+    if search_keywords:
+        parts = []
+        for i, keyword in enumerate(search_keywords):
+            key = f"product_search_{i}"
+            params[key] = f"%{keyword}%"
+            parts.append(
+                f"(LOWER(p.product_name) LIKE :{key} OR LOWER(p.merchant_code) LIKE :{key} "
+                f"OR LOWER(COALESCE(p.spec,'')) LIKE :{key} OR LOWER(COALESCE(p.brand,'')) LIKE :{key})"
+            )
+        clauses.append("(" + " AND ".join(parts) + ")")
     where_sql = (" AND " + " AND ".join(clauses)) if clauses else ""
     rows = _task_base_rows(db, department_id, where_sql, params)
     public_rows = []

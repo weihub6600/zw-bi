@@ -75,7 +75,7 @@ onMounted(async()=>{await loadOptions();await load()})
 
 <template>
   <div class="page">
-    <div class="page-title"><h1>库存分析</h1><p>真实读取 MySQL 最新库存快照、30天销量与库龄数据进行分类</p></div>
+    <div class="page-title"><h1>库存分析</h1><p>真实读取本地NAS最新库存快照、30天销量与库龄数据进行分类</p></div>
     <FilterBar :shop-options="shopOptions" :warehouse-options="warehouseOptions" :product-category-options="productCategoryOptions" :show-date="false" />
 
     <div v-if="error" class="api-error"><b>库存接口暂不可用</b><span>{{ error }}</span><button @click="load">重新读取</button></div>

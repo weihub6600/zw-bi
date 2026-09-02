@@ -113,12 +113,12 @@ function renderCharts(){
     const trend=data.value?.trend||[]
     const series=[{name:'销量',type:'line',smooth:.3,symbol:'circle',symbolSize:7,data:trend.map(x=>Number(x.sales_qty||0)),areaStyle:{opacity:.08},lineStyle:{width:3}}]
     if(priceVisible.value)series.push({name:'均价',type:'line',yAxisIndex:1,smooth:.24,symbol:'circle',symbolSize:5,data:trend.map(x=>x.avg_price==null?null:Number(x.avg_price)),lineStyle:{width:2,type:'dashed'}})
-    chart.setOption({tooltip:{trigger:'axis',backgroundColor:'rgba(20,28,50,.94)',borderWidth:0,textStyle:{color:'#fff'},formatter(ps){const i=ps?.[0]?.dataIndex||0,row=trend[i]||{};const parts=[row.date||'',`销量：${n(row.sales_qty)}`];if(priceVisible.value&&row.avg_price!=null)parts.push(`均价：${money(row.avg_price)}`);return parts.join('<br>')}},legend:{show:priceVisible.value,right:8},grid:{left:54,right:priceVisible.value?64:28,top:38,bottom:38},xAxis:{type:'category',boundaryGap:false,data:trend.map(x=>x.date.slice(5)),axisLabel:{interval:Math.max(0,Math.floor(trend.length/8)-1)}},yAxis:[{type:'value',name:'销量'},{type:'value',name:'均价',show:priceVisible.value,splitLine:{show:false}}],series},true)
+    chart.setOption({tooltip:{trigger:'axis',backgroundColor:'rgba(20,28,50,.94)',borderWidth:0,textStyle:{color:'#fff'},formatter(ps){const i=ps?.[0]?.dataIndex||0,row=trend[i]||{};const parts=[row.date||'',`销量：${n(row.sales_qty)}`];if(priceVisible.value&&row.avg_price!=null)parts.push(`均价：${money(row.avg_price)}`);return parts.join('<br>')}},legend:{show:priceVisible.value,top:0,right:8,itemWidth:14,itemHeight:8,itemGap:14,textStyle:{fontSize:11}},grid:{left:54,right:priceVisible.value?64:28,top:priceVisible.value?52:28,bottom:42,containLabel:true},xAxis:{type:'category',boundaryGap:false,data:trend.map(x=>x.date.slice(5)),axisLabel:{interval:Math.max(0,Math.floor(trend.length/8)-1)}},yAxis:[{type:'value',name:'销量',nameLocation:'end',nameTextStyle:{fontSize:11}},{type:'value',name:'均价',show:priceVisible.value,nameLocation:'middle',nameGap:38,nameTextStyle:{fontSize:11},splitLine:{show:false}}],series},true)
   }
   if(shopChartEl.value){
     if(!shopChart)shopChart=echarts.init(shopChartEl.value)
     const rows=[...(data.value?.shop_sales||[])].sort((a,b)=>Number(b.sales30||0)-Number(a.sales30||0)).slice(0,12).reverse()
-    shopChart.setOption({tooltip:{trigger:'axis',axisPointer:{type:'shadow'},backgroundColor:'rgba(20,28,50,.94)',borderWidth:0,textStyle:{color:'#fff'},formatter(ps){const i=ps?.[0]?.dataIndex||0,row=rows[i]||{};const yesterday=showYesterdaySales.value?`<br>昨日：${n(row.sales_yesterday)}`:'';return `${row.shop||''}${yesterday}<br>7天：${n(row.sales7)}<br>14天：${n(row.sales14)}<br>30天：${n(row.sales30)}<br>30天占比：${n(row.share30_pct,1)}%`}},grid:{left:138,right:36,top:12,bottom:28},xAxis:{type:'value',name:'30天销量'},yAxis:{type:'category',data:rows.map(x=>x.shop),axisLabel:{width:122,overflow:'truncate'}},series:[{type:'bar',data:rows.map(x=>Number(x.sales30||0)),barMaxWidth:18,label:{show:true,position:'right',fontSize:12},itemStyle:{borderRadius:[0,6,6,0]}}]},true)
+    shopChart.setOption({tooltip:{trigger:'axis',axisPointer:{type:'shadow'},backgroundColor:'rgba(20,28,50,.94)',borderWidth:0,textStyle:{color:'#fff'},formatter(ps){const i=ps?.[0]?.dataIndex||0,row=rows[i]||{};const yesterday=showYesterdaySales.value?`<br>昨日：${n(row.sales_yesterday)}`:'';return `${row.shop||''}${yesterday}<br>7天：${n(row.sales7)}<br>14天：${n(row.sales14)}<br>30天：${n(row.sales30)}<br>30天占比：${n(row.share30_pct,1)}%`}},grid:{left:138,right:36,top:12,bottom:46,containLabel:true},xAxis:{type:'value',name:'30天销量',nameLocation:'middle',nameGap:28,nameTextStyle:{fontSize:11}},yAxis:{type:'category',data:rows.map(x=>x.shop),axisLabel:{width:122,overflow:'truncate'}},series:[{type:'bar',data:rows.map(x=>Number(x.sales30||0)),barMaxWidth:18,label:{show:true,position:'right',fontSize:12},itemStyle:{borderRadius:[0,6,6,0]}}]},true)
     shopChart.off('click')
   }
 }
@@ -167,7 +167,7 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
   <input
     v-model="searchText"
     autocomplete="off"
-    placeholder="输入商家编码或商品名称，直接搜索…"
+    placeholder="输入商品名或商家编码；空格分隔多个关键词（同时命中）"
     @focus="(searchText||productCategoryId!=null)&&runSearch()"
     @keyup.enter="searchEnter"
   />

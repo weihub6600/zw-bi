@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   Ban, CalendarDays, Check, ChevronDown, Plus, Search, Settings2,
   SlidersHorizontal, Store, Tags, Warehouse, X
@@ -32,7 +32,12 @@ function openNew(){Object.assign(form,{id:null,name:'',shops:[...f.shops],wareho
 function openEdit(p){Object.assign(form,{id:p.id,name:p.name,shops:[...(p.shops||[])],warehouses:[...(p.warehouses||[])],productCategoryIds:[...(p.product_category_ids||[])],productCodes:(p.product_codes||[]).join('\n'),includeName:(p.include_name_keywords||[]).join(','),excludeName:(p.exclude_name_keywords||[]).join(',')});error.value='';modal.value=true}
 async function save(){saving.value=true;error.value='';try{await f.savePreset({id:form.id,name:form.name,payload:{name:form.name,shops:form.shops,warehouses:form.warehouses,product_category_ids:form.productCategoryIds,product_codes:split(form.productCodes),include_name_keywords:split(form.includeName),exclude_name_keywords:split(form.excludeName)}});modal.value=false}catch(e){error.value=e.message}finally{saving.value=false}}
 async function remove(p){if(!confirm(`确定删除个人筛选预设“${p.name}”吗？`))return;try{await f.deletePreset(p.id)}catch(e){alert(e.message)}}
-onMounted(()=>f.loadPresets())
+function onDocumentPointerDown(e){
+  const current=e.target.closest?.('.filter-dropdown')
+  document.querySelectorAll('.filter-dropdown[open]').forEach(el=>{if(el!==current)el.removeAttribute('open')})
+}
+onMounted(()=>{f.loadPresets();document.addEventListener('pointerdown',onDocumentPointerDown,true)})
+onBeforeUnmount(()=>document.removeEventListener('pointerdown',onDocumentPointerDown,true))
 </script>
 
 <template>
@@ -98,7 +103,7 @@ onMounted(()=>f.loadPresets())
         </div>
       </details>
 
-      <label class="filter-control"><span><Search :size="15"/>商品</span><input v-model="f.productSearch" placeholder="名称 / 商家编码"/></label>
+      <label class="filter-control"><span><Search :size="15"/>商品</span><input v-model="f.productSearch" placeholder="名称 / 商家编码；空格=同时命中"/></label>
       <label class="filter-control"><span><Tags :size="15"/>商品名包含</span><input v-model="f.includeName" placeholder="例如：泡菜, 海苔"/></label>
       <label class="filter-control"><span><Ban :size="15"/>商品名不包含</span><input v-model="f.excludeName" placeholder="例如：赠品, 测试"/></label>
     </div>
