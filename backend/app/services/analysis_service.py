@@ -27,6 +27,7 @@ from .dashboard_service import (
 from .expiry_service import is_long_term_expiry, total_shelf_days
 from .permission_service import assert_can_view_department
 from .auth_service import record_activity
+from ..core.timezone import today_local
 
 
 # 这两个阈值目前作为可配置默认值使用，不作为不可变业务规则锁死。
@@ -858,7 +859,7 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
 
     latest_sales_date = _get_latest_sales_date(db, department_id)
     latest_inventory_date = _get_latest_inventory_date(db, department_id)
-    yesterday_sales_date = date.today() - timedelta(days=1)
+    yesterday_sales_date = today_local() - timedelta(days=1)
     yesterday_sales_available = _has_sales_on_date(db, department_id, yesterday_sales_date)
     metrics, trend = _product_sales_metrics(db, department_id, scope, int(product["id"]), latest_sales_date)
     comparison = sales_period_comparison(db, department_id, scope, latest_sales_date, product_id=int(product["id"]))

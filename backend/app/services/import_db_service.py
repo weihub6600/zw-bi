@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .import_parser import ParsedImport, RowError, json_safe, parse_import_file, sha256_file
 from .permission_service import assert_can_import, assert_can_view_department
+from ..core.timezone import now_local, today_local
 
 
 class DuplicateImportError(RuntimeError):
@@ -68,8 +69,8 @@ def _is_system_level_error(exc: Exception) -> bool:
 
 
 def _batch_no(data_type: str, business_date: date | None) -> str:
-    day = (business_date or date.today()).strftime("%Y%m%d")
-    stamp = datetime.now().strftime("%H%M%S%f")
+    day = (business_date or today_local()).strftime("%Y%m%d")
+    stamp = now_local().strftime("%H%M%S%f")
     return f"IMP-{day}-{data_type.upper()}-{stamp}"
 
 

@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ..core.timezone import now_local
+
 PASSWORD_ALGORITHM = "pbkdf2_sha256"
 PASSWORD_ITERATIONS = 310_000
 
@@ -52,7 +54,7 @@ def token_hash(raw_token: str) -> str:
 
 
 def _now() -> datetime:
-    return datetime.now().replace(microsecond=0)
+    return now_local()
 
 
 def log_login(db: Session, *, user_pk: int | None, login_key: str, result: str, ip_address: str | None, user_agent: str | None) -> None:

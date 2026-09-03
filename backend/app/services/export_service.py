@@ -15,6 +15,7 @@ from .analysis_service import get_expiry_batches, get_inventory_analysis
 from .auth_service import record_activity
 from .dashboard_service import DashboardScope, _scope_clauses, _where, selected_sales_range
 from .permission_service import assert_can_view_department
+from ..core.timezone import today_local
 
 
 class ExportError(ValueError):
@@ -284,7 +285,7 @@ def _build_xlsx(
     else:
         raise ExportError(f"不支持的数据类型：{data_type}")
     content = _make_workbook(headers_override or headers, rows, date_cols, write_only=write_only)
-    suffix = date.today().strftime('%Y%m%d')
+    suffix = today_local().strftime('%Y%m%d')
     filename = f"{department_code}_{FILENAME_PREFIX[data_type]}_{suffix}.xlsx"
     ascii_filename = f"{department_code}_{FILENAME_ASCII[data_type]}_{suffix}.xlsx"
     return content, filename, len(rows), ascii_filename

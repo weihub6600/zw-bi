@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..core.timezone import now_local
 from .auth_service import hash_password, record_activity
 from .permission_service import PermissionDenied, get_department
 
@@ -63,7 +63,7 @@ def list_users(db: Session, actor: dict, department_code: str, *, search: str = 
         WHERE {' AND '.join(where)}
         ORDER BY CASE ud.role WHEN 'dept_admin' THEN 0 ELSE 1 END,u.username
     """), params).mappings().all()
-    now = datetime.now()
+    now = now_local()
     items=[]
     for r in rows:
         x=dict(r)
@@ -158,7 +158,7 @@ def activity_summary(db: Session, actor: dict, department_code: str) -> dict:
       WHERE ud.department_id=:did AND ud.status='enabled'
       ORDER BY u.username
     """),{"did":department["id"]}).mappings().all()
-    now=datetime.now();items=[]
+    now=now_local();items=[]
     for r in rows:
         x=dict(r); la=x.get("last_active_time"); ll=x.get("last_login_time")
         mins=(now-la).total_seconds()/60 if la else 10**9
