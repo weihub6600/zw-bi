@@ -14,3 +14,8 @@ export const fetchDepartmentMembers=code=>apiRequest(`/api/admin/departments/${e
 export const saveMembership=(code,userId,body)=>apiRequest(`/api/admin/departments/${encodeURIComponent(code)}/members/${encodeURIComponent(userId)}`,{method:'PUT',body})
 export const deleteMembership=(code,userId)=>apiRequest(`/api/admin/departments/${encodeURIComponent(code)}/members/${encodeURIComponent(userId)}`,{method:'DELETE'})
 export const fetchAuditLogs=({departmentCode='',userId='',actionType='',days=7,limit=200}={})=>apiRequest('/api/admin/audit',{params:{department_code:departmentCode,user_id:userId,action_type:actionType,days,limit}})
+export const fetchProductCategoryAdmin=({search='',categoryId='',page=1,pageSize=25}={})=>apiRequest('/api/admin/product-categories',{params:{department_code:currentDepartmentCode(),search,category_id:categoryId||undefined,page,page_size:pageSize}})
+export const createProductCategory=body=>apiRequest('/api/admin/product-categories',{method:'POST',params:{department_code:currentDepartmentCode()},body})
+export const renameProductCategory=(id,body)=>apiRequest(`/api/admin/product-categories/${id}`,{method:'PUT',params:{department_code:currentDepartmentCode()},body})
+export const deleteProductCategory=id=>apiRequest(`/api/admin/product-categories/${id}`,{method:'DELETE',params:{department_code:currentDepartmentCode()}})
+export const assignProductCategories=body=>apiRequest('/api/admin/product-categories/assign',{method:'PUT',params:{department_code:currentDepartmentCode()},body})

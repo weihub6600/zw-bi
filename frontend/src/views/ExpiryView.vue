@@ -15,16 +15,21 @@ const data=ref(null),error=ref(''),loading=ref(false)
 const shopOptions=ref([]),warehouseOptions=ref([]),productCategoryOptions=ref([])
 const statuses=ref([]),daysMin=ref(''),daysMax=ref(''),pctMin=ref(''),pctMax=ref('')
 const exporting=ref(false),exportError=ref(''),lastExportCount=ref(null)
+const currentPage=ref(1),pageSize=ref(50)
 let timer=null,serial=0
 const sort=ref({key:'remaining_days',dir:'asc'})
-const rows=computed(()=>sortRows(data.value?.rows||[],sort.value)),summary=computed(()=>data.value?.summary||{})
+const sortedRows=computed(()=>sortRows(data.value?.rows||[],sort.value))
+const totalPages=computed(()=>Math.max(1,Math.ceil(sortedRows.value.length/pageSize.value)))
+const rows=computed(()=>{const page=Math.min(currentPage.value,totalPages.value);const start=(page-1)*pageSize.value;return sortedRows.value.slice(start,start+pageSize.value)})
+const summary=computed(()=>data.value?.summary||{})
 const statusList=['正常','预警','临期','过期']
 
 function n(v,d=0){return Number(v||0).toLocaleString('zh-CN',{maximumFractionDigits:d})}
 function statusClass(s){return {'正常':'expiry-normal','预警':'expiry-warn','临期':'expiry-near','过期':'expiry-expired'}[s]||''}
 function sortRows(rows,s){const dir=s.dir==='asc'?1:-1;return [...rows].sort((a,b)=>{const av=a[s.key],bv=b[s.key];if(av==null&&bv==null)return 0;if(av==null)return 1;if(bv==null)return -1;const an=Number(av),bn=Number(bv);return Number.isFinite(an)&&Number.isFinite(bn)?(an-bn)*dir:String(av).localeCompare(String(bv),'zh-CN')*dir})}
-function toggleSort(key,defaultDir='desc'){sort.value=sort.value.key===key?{key,dir:sort.value.dir==='asc'?'desc':'asc'}:{key,dir:defaultDir}}
+function toggleSort(key,defaultDir='desc'){sort.value=sort.value.key===key?{key,dir:sort.value.dir==='asc'?'desc':'asc'}:{key,dir:defaultDir};currentPage.value=1}
 function mark(key){return sort.value.key===key?(sort.value.dir==='asc'?'↑':'↓'):''}
+function goPage(page){currentPage.value=Math.max(1,Math.min(totalPages.value,page))}
 function toggleStatus(s){statuses.value=statuses.value.includes(s)?statuses.value.filter(x=>x!==s):[...statuses.value,s];load()}
 async function loadOptions(){try{const r=await fetchDashboardOptions();shopOptions.value=r.shops||[];warehouseOptions.value=r.warehouses||[];productCategoryOptions.value=r.product_categories||[]}catch(e){error.value=e.message}}
 async function load(){
@@ -53,6 +58,9 @@ async function downloadFiltered(){
 }
 watch(()=>[JSON.stringify(f.warehouses),JSON.stringify(f.productCategoryIds),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),localProductSearch.value],schedule)
 watch(()=>[daysMin.value,daysMax.value,pctMin.value,pctMax.value],schedule)
+watch(()=>[JSON.stringify(f.warehouses),JSON.stringify(f.productCategoryIds),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),localProductSearch.value,daysMin.value,daysMax.value,pctMin.value,pctMax.value,statuses.value.join(',')],()=>{currentPage.value=1})
+watch(pageSize,()=>{currentPage.value=1})
+watch(()=>data.value?.rows?.length,()=>{currentPage.value=1})
 onMounted(async()=>{const qs=String(route.query.status||'');if(statusList.includes(qs))statuses.value=[qs];await loadOptions();await load()})
 </script>
 
@@ -94,6 +102,13 @@ onMounted(async()=>{const qs=String(route.query.status||'');if(statusList.includ
             <tr v-if="!rows.length"><td colspan="11" class="table-empty">当前条件下没有效期批次。</td></tr>
           </tbody>
         </table>
+        <div v-if="sortedRows.length" class="table-pagination">
+          <span>共 {{ n(sortedRows.length) }} 条，第 {{ Math.min(currentPage,totalPages) }} / {{ totalPages }} 页</span>
+          <label>每页<select v-model.number="pageSize"><option :value="50">50</option><option :value="100">100</option></select>条</label>
+          <button class="pagination-button" :disabled="currentPage<=1" @click="goPage(currentPage-1)">上一页</button>
+          <button v-for="page in Math.min(totalPages,7)" :key="page" :class="['pagination-button',{active:page===currentPage}]" @click="goPage(page)">{{ page }}</button>
+          <button class="pagination-button" :disabled="currentPage>=totalPages" @click="goPage(currentPage+1)">下一页</button>
+        </div>
       </section>
     </template>
   </div>

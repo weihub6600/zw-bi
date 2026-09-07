@@ -309,21 +309,27 @@ def _sales_rows(
     scope: DashboardScope,
     latest_sales_date: date,
 ) -> tuple[list[dict[str, Any]], date | None]:
+    this_month_start = latest_sales_date.replace(day=1)
+    last_month_end = this_month_start - timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
     d7 = latest_sales_date - timedelta(days=6)
     d14 = latest_sales_date - timedelta(days=13)
     d30 = latest_sales_date - timedelta(days=29)
     prev7_start = latest_sales_date - timedelta(days=13)
     prev7_end = latest_sales_date - timedelta(days=7)
     selected_start, selected_end, _selected_days = selected_sales_range(scope, latest_sales_date)
-    query_start = min(d30, selected_start)
+    query_start = min(d30, selected_start, last_month_start)
 
     params: dict[str, Any] = {
         "department_id": department_id,
         "end_date": latest_sales_date,
+        "latest_sales_date": latest_sales_date,
         "query_start": query_start,
         "d7": d7,
         "d14": d14,
         "d30": d30,
+        "last_month_start": last_month_start,
+        "last_month_end": last_month_end,
         "prev7_start": prev7_start,
         "prev7_end": prev7_end,
         "selected_start": selected_start,
@@ -337,9 +343,11 @@ def _sales_rows(
           p.id AS product_id,
           p.merchant_code,
           p.product_name,
+          SUM(CASE WHEN sd.business_date = :latest_sales_date THEN sd.sales_qty ELSE 0 END) AS sales_yesterday,
           SUM(CASE WHEN sd.business_date >= :d7 THEN sd.sales_qty ELSE 0 END) AS sales7,
           SUM(CASE WHEN sd.business_date >= :d14 THEN sd.sales_qty ELSE 0 END) AS sales14,
           SUM(CASE WHEN sd.business_date >= :d30 THEN sd.sales_qty ELSE 0 END) AS sales30,
+          SUM(CASE WHEN sd.business_date BETWEEN :last_month_start AND :last_month_end THEN sd.sales_qty ELSE 0 END) AS sales_last_month,
           SUM(CASE WHEN sd.business_date BETWEEN :prev7_start AND :prev7_end THEN sd.sales_qty ELSE 0 END) AS prior7,
           SUM(CASE WHEN sd.business_date BETWEEN :selected_start AND :selected_end THEN sd.sales_qty ELSE 0 END) AS selected_sales,
           SUM(CASE WHEN sd.business_date BETWEEN :selected_start AND :selected_end AND sd.sales_qty > 0 AND sd.avg_price > 0
@@ -658,9 +666,11 @@ def _merge_products(sales_rows: list[dict[str, Any]], inventory_rows: list[dict[
             "product_id": pid,
             "sku": row["merchant_code"],
             "name": row["product_name"],
+            "sales_yesterday": _number(row.get("sales_yesterday")),
             "sales7": _number(row.get("sales7")),
             "sales14": _number(row.get("sales14")),
             "sales30": _number(row.get("sales30")),
+            "sales_last_month": _number(row.get("sales_last_month")),
             "prior7": _number(row.get("prior7")),
             "selected_sales": _number(row.get("selected_sales")),
             "selected_revenue": revenue,
@@ -675,9 +685,11 @@ def _merge_products(sales_rows: list[dict[str, Any]], inventory_rows: list[dict[
                 "product_id": pid,
                 "sku": row["merchant_code"],
                 "name": row["product_name"],
+                "sales_yesterday": 0.0,
                 "sales7": 0.0,
                 "sales14": 0.0,
                 "sales30": 0.0,
+                "sales_last_month": 0.0,
                 "prior7": 0.0,
                 "selected_sales": 0.0,
                 "selected_revenue": 0.0,

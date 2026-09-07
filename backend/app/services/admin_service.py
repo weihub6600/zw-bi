@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -199,3 +201,142 @@ def save_department_expiry_rule(db: Session, actor: dict, department_code: str, 
         db.execute(text("INSERT INTO expiry_rules(scope_type,department_id,product_id,near_days,near_pct,warn_days,warn_pct,updated_by) VALUES('department',:did,NULL,:near_days,:near_pct,:warn_days,:warn_pct,:uid)"), params)
     record_activity(db,int(actor["user_pk"]),"expiry_rule_update",department_id=int(department["id"]),detail={"near_days":near_days,"near_pct":near_pct,"warn_days":warn_days,"warn_pct":warn_pct})
     return get_department_expiry_rule(db,actor,department_code)
+
+
+# Product categories are shared product-master metadata. Department admins can
+# assign categories only for products visible in their managed department;
+# dictionary changes remain system-admin-only because category names are global.
+def _product_visibility_sql(actor: dict, department_id: int) -> tuple[str, dict]:
+    if actor["is_system_admin"]:
+        return "1=1", {}
+    return (
+        "(EXISTS (SELECT 1 FROM sales_daily sd WHERE sd.department_id=:product_department_id AND sd.product_id=p.id) "
+        "OR EXISTS (SELECT 1 FROM inventory_batch ib WHERE ib.department_id=:product_department_id AND ib.product_id=p.id) "
+        "OR EXISTS (SELECT 1 FROM aging_snapshot ag WHERE ag.department_id=:product_department_id AND ag.product_id=p.id) "
+        "OR EXISTS (SELECT 1 FROM import_batches b WHERE b.department_id=:product_department_id AND b.id=p.import_batch_id))",
+        {"product_department_id": department_id},
+    )
+
+
+def _category_ids(db: Session, category_ids: list[int] | tuple[int, ...]) -> list[int]:
+    normalized = list(dict.fromkeys(int(x) for x in (category_ids or [])))
+    if not normalized:
+        return []
+    placeholders = ",".join(f":category_{i}" for i in range(len(normalized)))
+    rows = db.execute(text(f"SELECT id FROM product_categories WHERE id IN ({placeholders})"), {f"category_{i}": value for i, value in enumerate(normalized)}).scalars().all()
+    found = {int(x) for x in rows}
+    missing = [str(x) for x in normalized if x not in found]
+    if missing:
+        raise ValueError(f"商品分类不存在：{', '.join(missing)}")
+    return normalized
+
+
+def _category_names_by_product(db: Session, product_ids: list[int]) -> dict[int, list[dict]]:
+    if not product_ids:
+        return {}
+    placeholders = ",".join(f":product_{i}" for i in range(len(product_ids)))
+    rows = db.execute(text(f"""
+        SELECT pcr.product_id, pc.id, pc.category_name
+        FROM product_category_relations pcr
+        JOIN product_categories pc ON pc.id=pcr.category_id
+        WHERE pcr.product_id IN ({placeholders})
+        ORDER BY pcr.product_id, pc.category_name
+    """), {f"product_{i}": value for i, value in enumerate(product_ids)}).mappings().all()
+    result: dict[int, list[dict]] = {}
+    for row in rows:
+        result.setdefault(int(row["product_id"]), []).append({"id": int(row["id"]), "name": row["category_name"]})
+    return result
+
+
+def list_product_category_admin(db: Session, actor: dict, department_code: str, *, search: str = "", category_id: int | None = None, page: int = 1, page_size: int = 25) -> dict:
+    department = assert_can_admin_department(db, actor, department_code)
+    page = max(1, int(page)); page_size = min(100, max(10, int(page_size)))
+    scope_sql, params = _product_visibility_sql(actor, int(department["id"]))
+    where = [scope_sql]
+    for i, keyword in enumerate(x.strip().lower() for x in re.split(r"\s+", search or "") if x.strip()):
+        key = f"product_search_{i}"; params[key] = f"%{keyword}%"
+        where.append(f"(LOWER(p.merchant_code) LIKE :{key} OR LOWER(p.product_name) LIKE :{key} OR LOWER(COALESCE(p.spec,'')) LIKE :{key} OR LOWER(COALESCE(p.brand,'')) LIKE :{key})")
+    if category_id is not None:
+        params["category_id"] = int(category_id)
+        where.append("EXISTS (SELECT 1 FROM product_category_relations fcr WHERE fcr.product_id=p.id AND fcr.category_id=:category_id)")
+    where_sql = " AND ".join(where)
+    total = int(db.execute(text(f"SELECT COUNT(*) FROM products p WHERE {where_sql}"), params).scalar() or 0)
+    params.update({"limit": page_size, "offset": (page - 1) * page_size})
+    rows = db.execute(text(f"""
+        SELECT p.id,p.merchant_code,p.product_name,p.spec,p.brand,p.updated_at
+        FROM products p WHERE {where_sql}
+        ORDER BY p.product_name,p.merchant_code LIMIT :limit OFFSET :offset
+    """), params).mappings().all()
+    ids = [int(row["id"]) for row in rows]; category_map = _category_names_by_product(db, ids)
+    items = [{"product_id": int(row["id"]), "sku": row["merchant_code"], "name": row["product_name"], "spec": row["spec"], "brand": row["brand"], "updated_at": row["updated_at"], "categories": category_map.get(int(row["id"]), [])} for row in rows]
+    category_rows = db.execute(text("SELECT id,category_name FROM product_categories ORDER BY category_name")).mappings().all()
+    return {"department": {"code": department["code"], "name": department["name"]}, "items": items, "total": total, "page": page, "page_size": page_size, "categories": [{"id": int(row["id"]), "name": row["category_name"]} for row in category_rows], "can_manage_dictionary": bool(actor["is_system_admin"])}
+
+
+def create_product_category(db: Session, actor: dict, department_code: str, name: str) -> dict:
+    department = assert_can_admin_department(db, actor, department_code)
+    if not actor["is_system_admin"]:
+        raise PermissionDenied("商品分类字典仅系统管理员可维护")
+    clean_name = str(name or "").strip()
+    if not clean_name or len(clean_name) > 100: raise ValueError("分类名称不能为空且不能超过 100 个字符")
+    try:
+        result = db.execute(text("INSERT INTO product_categories(category_name) VALUES(:name)"), {"name": clean_name})
+        record_activity(db, int(actor["user_pk"]), "product_category_create", department_id=int(department["id"]), detail={"category_name": clean_name})
+        return {"id": int(result.lastrowid), "name": clean_name}
+    except IntegrityError as exc:
+        db.rollback(); raise ValueError("商品分类名称已存在") from exc
+
+
+def rename_product_category(db: Session, actor: dict, department_code: str, category_id: int, name: str) -> dict:
+    department = assert_can_admin_department(db, actor, department_code)
+    if not actor["is_system_admin"]: raise PermissionDenied("商品分类字典仅系统管理员可维护")
+    clean_name = str(name or "").strip()
+    if not clean_name or len(clean_name) > 100: raise ValueError("分类名称不能为空且不能超过 100 个字符")
+    existing = db.execute(text("SELECT id,category_name FROM product_categories WHERE id=:id"), {"id": category_id}).mappings().first()
+    if not existing: raise LookupError("商品分类不存在")
+    try:
+        db.execute(text("UPDATE product_categories SET category_name=:name WHERE id=:id"), {"name": clean_name, "id": category_id})
+        record_activity(db, int(actor["user_pk"]), "product_category_rename", department_id=int(department["id"]), detail={"category_id": category_id, "before": existing["category_name"], "name": clean_name})
+        return {"id": int(category_id), "name": clean_name}
+    except IntegrityError as exc:
+        db.rollback(); raise ValueError("商品分类名称已存在") from exc
+
+
+def delete_product_category(db: Session, actor: dict, department_code: str, category_id: int) -> dict:
+    department = assert_can_admin_department(db, actor, department_code)
+    if not actor["is_system_admin"]: raise PermissionDenied("商品分类字典仅系统管理员可维护")
+    existing = db.execute(text("SELECT id,category_name FROM product_categories WHERE id=:id"), {"id": category_id}).mappings().first()
+    if not existing: raise LookupError("商品分类不存在")
+    linked = int(db.execute(text("SELECT COUNT(*) FROM product_category_relations WHERE category_id=:id"), {"id": category_id}).scalar() or 0)
+    if linked: raise ValueError(f"该分类仍关联 {linked} 个商品，请先清空商品关联后再删除")
+    db.execute(text("DELETE FROM product_categories WHERE id=:id"), {"id": category_id})
+    record_activity(db, int(actor["user_pk"]), "product_category_delete", department_id=int(department["id"]), detail={"category_id": category_id, "category_name": existing["category_name"]})
+    return {"ok": True}
+
+
+def _assert_visible_products(db: Session, actor: dict, department: dict, product_ids: list[int]) -> list[int]:
+    normalized = list(dict.fromkeys(int(x) for x in (product_ids or [])))
+    if not normalized: raise ValueError("至少选择一个商品")
+    scope_sql, scope_params = _product_visibility_sql(actor, int(department["id"]))
+    placeholders = ",".join(f":product_{i}" for i in range(len(normalized)))
+    params = {**scope_params, **{f"product_{i}": value for i, value in enumerate(normalized)}}
+    rows = db.execute(text(f"SELECT p.id FROM products p WHERE p.id IN ({placeholders}) AND {scope_sql}"), params).scalars().all()
+    found = {int(x) for x in rows}; missing = [str(x) for x in normalized if x not in found]
+    if missing: raise PermissionDenied(f"无权维护这些商品：{', '.join(missing)}")
+    return normalized
+
+
+def set_product_categories(db: Session, actor: dict, department_code: str, product_ids: list[int], category_ids: list[int]) -> dict:
+    department = assert_can_admin_department(db, actor, department_code)
+    product_ids = _assert_visible_products(db, actor, department, product_ids)
+    category_ids = _category_ids(db, category_ids)
+    placeholders = ",".join(f":product_{i}" for i in range(len(product_ids)))
+    db.execute(text(f"DELETE FROM product_category_relations WHERE product_id IN ({placeholders})"), {f"product_{i}": value for i, value in enumerate(product_ids)})
+    insert_sql = "INSERT OR IGNORE" if db.get_bind().dialect.name == "sqlite" else "INSERT IGNORE"
+    for product_id in product_ids:
+        for category_id in category_ids:
+            db.execute(text(f"{insert_sql} INTO product_category_relations(product_id,category_id) VALUES(:product_id,:category_id)"), {"product_id": product_id, "category_id": category_id})
+        names = db.execute(text("SELECT pc.category_name FROM product_categories pc JOIN product_category_relations pcr ON pcr.category_id=pc.id WHERE pcr.product_id=:product_id ORDER BY pc.category_name"), {"product_id": product_id}).scalars().all()
+        db.execute(text("UPDATE products SET category=:category WHERE id=:product_id"), {"category": "、".join(str(x) for x in names) or None, "product_id": product_id})
+    record_activity(db, int(actor["user_pk"]), "product_category_assign", department_id=int(department["id"]), detail={"product_ids": product_ids, "category_ids": category_ids})
+    return {"ok": True, "product_ids": product_ids, "category_ids": category_ids}

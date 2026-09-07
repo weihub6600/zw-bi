@@ -28,7 +28,14 @@ const visibleTabs = computed(() => {
 })
 const activeTab = ref(canImport.value ? 'import' : 'download')
 const dataType = ref('sales')
-const businessDate = ref('2026-08-19')
+function localDateInputValue() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+const businessDate = ref(localDateInputValue())
 const selectedFile = ref(null)
 const fileInput = ref(null)
 const preview = ref(null)

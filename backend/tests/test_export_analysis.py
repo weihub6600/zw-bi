@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import unittest
 from unittest import mock
+from io import BytesIO
 
+from openpyxl import load_workbook
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
@@ -68,6 +70,20 @@ class ExportReuseTests(unittest.TestCase):
             self.assertEqual(scope.warehouses, ("\u4e3b\u4ed3",))
             self.assertEqual(result["row_count"], 1)
             db.close()
+
+    def test_inventory_analysis_category_column_is_optional(self):
+        db = _db()
+        fake_rows = [{"sku": "A", "name": "商品A", "product_category_names": "饮料、碳酸", "category_label": "健康库存", "stock_qty": 5.0,
+                      "sales7": 1, "sales14": 2, "sales30": 3, "predicted_daily": 0.5,
+                      "cover_days": 10.0, "weighted_aging_days": 12.0, "max_aging_days": 30}]
+        with mock.patch.object(export_service, "get_inventory_analysis", return_value={"rows": fake_rows}):
+            with_category = export_inventory_analysis(db, "MEM", "B2C", detail_product_categories=True)
+            without_category = export_inventory_analysis(db, "MEM", "B2C", detail_product_categories=False)
+        with_headers = [cell.value for cell in load_workbook(BytesIO(with_category["content"]), read_only=True).active[1]]
+        without_headers = [cell.value for cell in load_workbook(BytesIO(without_category["content"]), read_only=True).active[1]]
+        self.assertIn("商品分类", with_headers)
+        self.assertNotIn("商品分类", without_headers)
+        db.close()
 
     def test_expiry_batches_reuses_get_expiry_batches(self):
         db = _db()

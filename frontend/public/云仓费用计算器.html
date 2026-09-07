@@ -141,6 +141,10 @@
         <div><label>气柱数量</label><input id="s_qzqty" type="number" min="0" step="1" value="0"></div>
       </div>
       <div class="row">
+        <div><label>耗材金额（元）</label><input id="s_material_fee" type="text" value="按默认云仓规则计算" readonly></div>
+        <div><label>耗材方案（按单）</label><select id="s_material"></select></div>
+      </div>
+      <div class="row">
         <div><label>场景</label><select id="s_scene">
           <option value="normal">正常发货</option>
           <option value="intercept">拦截（+1元/单，可选加已产生运费）</option>
@@ -294,6 +298,19 @@ var PROV_ORDER = ["安徽","江苏","浙江","上海","河南","湖北","江西"
   "北京","天津","河北","山西","陕西","四川","重庆","广西","云南","贵州","辽宁","吉林","黑龙江",
   "海南","甘肃","宁夏","内蒙古","青海","新疆","西藏"];
 var GROUP_LABEL = {jitu:"极兔快递", td:"通达快递", zhongtong:"中通快递", haokuai:"中通好快", debang:"德邦", other:"其他"};
+var MATERIAL_OPTIONS = {
+  default: { label:"默认云仓", price:null },
+  new330_6: { label:"330ml 新6支", price:1.31 },
+  slim330_6: { label:"330ml 细6支", price:1.1 },
+  large500_6: { label:"500ml大6支", price:1.5 },
+  small187: { label:"187ml小", price:1.77 },
+  shuimama227: { label:"水妈妈227", price:0.27 },
+  dayangjiu: { label:"大洋酒", price:2.06 },
+  guanli_sour_pickle: { label:"冠利酸黄瓜", price:1.32 },
+  guanli_cucumber_relish: { label:"冠利青瓜蓉", price:1 },
+  apple_vinegar_large: { label:"苹果醋大", price:1.87 },
+  apple_vinegar_small: { label:"苹果醋小", price:1.21 }
+};
 
 /* ===== CALC-CORE-BEGIN（纯函数，可整体移植到 zw-bi 前端或改写成 FastAPI） ===== */
 function loadRates(){
@@ -356,6 +373,10 @@ function materialFee(kg, RATE){
   for(var i = 0; i < segs.length; i++){ if(Number(kg) <= segs[i][0]) return segs[i][1]; }
   return last[1];
 }
+function selectedMaterialFee(kg, materialOption, RATE){
+  var option = MATERIAL_OPTIONS[materialOption || "default"] || MATERIAL_OPTIONS.default;
+  return option.price == null ? materialFee(kg, RATE) : option.price;
+}
 /* 915加收：仅丰诚系（极兔/通达/中通/好快），德邦、安能等免 */
 function s915Fee(group, P){
   return (group === "jitu" || group === "td" || group === "zhongtong" || group === "haokuai") ? P.s915 : 0;
@@ -408,7 +429,7 @@ function calcOrder(o, RATE){
     warn.push("好快加收表无「" + o.prov + "」，按0计，请与仓库确认");
   var s9 = s915Fee(o.group, P);
   var op = opFee(o.qty, P);
-  var mat = materialFee(o.kg, RATE);
+  var mat = selectedMaterialFee(o.kg, o.materialOption, RATE);
   var qz = (o.qizhuSpec && RATE.qizhu[o.qizhuSpec] && Number(o.qizhuQty) > 0)
          ? r2(RATE.qizhu[o.qizhuSpec] * Number(o.qizhuQty)) : 0;
   var cut = jmCut(o.group, P);
@@ -496,13 +517,30 @@ fillProv($("s_prov"));
     sel.appendChild(op);
   }
 })();
+function fillMaterialOptions(){
+  var sel = $("s_material");
+  sel.innerHTML = "";
+  for(var key in MATERIAL_OPTIONS){
+    var item = MATERIAL_OPTIONS[key], op = document.createElement("option");
+    op.value = key;
+    op.textContent = item.price == null ? item.label + "（原有重量档位）" : item.label + "（" + item.price.toFixed(2) + "元）";
+    sel.appendChild(op);
+  }
+}
+function refreshMaterialFee(){
+  var option = MATERIAL_OPTIONS[$("s_material").value] || MATERIAL_OPTIONS.default;
+  $("s_material_fee").value = option.price == null ? "按默认云仓规则计算" : option.price.toFixed(2) + " 元 / 单";
+}
+fillMaterialOptions();
+$("s_material").addEventListener("change", refreshMaterialFee);
+refreshMaterialFee();
 /* ---- 单票：四家承运商自动比价 ---- */
 var CMP_GROUPS = ["jitu", "td", "zhongtong", "haokuai", "debang"];
-function compareAll(prov, kg, qty, use915, useCut, useHk){
+function compareAll(prov, kg, qty, use915, useCut, useHk, materialOption){
   var res = [];
   for(var i = 0; i < CMP_GROUPS.length; i++){
     var g = CMP_GROUPS[i];
-    var r = calcOrder({ prov:prov, group:g, kg:kg, qty:qty, scene:"normal",
+    var r = calcOrder({ prov:prov, group:g, kg:kg, qty:qty, materialOption:materialOption, scene:"normal",
       freightHand:"", extraFee:0, qizhuSpec:"", qizhuQty:0 }, RATE);
     r.group = g;
     if(!use915) r.s9 = 0;
@@ -569,12 +607,13 @@ $("s_calc").addEventListener("click", function(){
   var o = {
     prov: $("s_prov").value,
     kg: parseFloat($("s_kg").value), qty: parseInt($("s_qty").value, 10),
+    materialOption: $("s_material").value,
     qizhuSpec: $("s_qz").value, qizhuQty: parseInt($("s_qzqty").value, 10) || 0,
     scene: $("s_scene").value, sceneFreight: parseFloat($("s_sfw").value) || 0,
     extraFee: parseFloat($("s_extra").value) || 0
   };
   if(!(o.kg >= 0)){ toast("请填写计费重量"); return; }
-  var res = compareAll(o.prov, o.kg, o.qty || 1, true, true, true);
+  var res = compareAll(o.prov, o.kg, o.qty || 1, true, true, true, o.materialOption);
   for(var i = 0; i < res.length; i++){
     res[i].extra2 = o.extraFee;
     res[i].sceneFee2 = 0;
@@ -614,7 +653,8 @@ $("s_calc").addEventListener("click", function(){
   }
   html += '</table>';
   var c = res[0];
-  var common = '各承运商相同的部分已计入合计：操作费 ' + c.op.toFixed(2) + '、耗材费 ' + c.mat.toFixed(2);
+  var materialLabel = (MATERIAL_OPTIONS[o.materialOption] || MATERIAL_OPTIONS.default).label;
+  var common = '各承运商相同的部分已计入合计：操作费 ' + c.op.toFixed(2) + '、耗材费 ' + c.mat.toFixed(2) + '（' + materialLabel + '）';
   if(c.qz2) common += '、气柱 ' + c.qz2.toFixed(2);
   if(o.extraFee) common += '、其他加收 ' + Number(o.extraFee).toFixed(2);
   if(c.sceneFee2) common += '、拦截/退件 ' + c.sceneFee2.toFixed(2);

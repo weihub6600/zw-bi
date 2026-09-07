@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+import json
+import re
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .dashboard_service import (
@@ -40,7 +43,71 @@ CATEGORY_LABELS = {
     "high": "高库存",
     "stagnant": "呆滞库存",
     "no_sales": "无销量库存",
+    "stockout": "缺货动销",
 }
+
+
+def _product_category_names_by_product(db: Session, product_ids: list[int]) -> dict[int, str]:
+    if not product_ids:
+        return {}
+    placeholders = ",".join(f":product_category_product_{i}" for i in range(len(product_ids)))
+    params = {f"product_category_product_{i}": product_id for i, product_id in enumerate(product_ids)}
+
+    def split_names(value: Any) -> list[str]:
+        if value is None:
+            return []
+        raw = str(value).strip()
+        if not raw:
+            return []
+        raw = raw.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "\r")
+        # Some historical imports stored a JSON array in the category column.
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                decoded = json.loads(raw)
+                if isinstance(decoded, list):
+                    return [str(item).strip() for item in decoded if str(item).strip()]
+            except (TypeError, ValueError):
+                pass
+        return [part.strip() for part in re.split(r"[,，、;；|\r\n]+", raw) if part.strip()]
+
+    # Always load the legacy column first. This keeps categories visible even
+    # when the relation tables are empty after a database restore.
+    product_rows = db.execute(
+        text(f"SELECT id AS product_id, category FROM products WHERE id IN ({placeholders})"),
+        params,
+    ).mappings().all()
+    result: dict[int, str] = {
+        int(row["product_id"]): "、".join(dict.fromkeys(split_names(row["category"])))
+        for row in product_rows
+    }
+
+    # New multi-category relations are authoritative when present. Older
+    # restored databases without relation rows continue using the legacy field.
+    try:
+        relation_rows = db.execute(
+            text(
+                f"""
+                SELECT pcr.product_id, pc.category_name
+                FROM product_category_relations pcr
+                JOIN product_categories pc ON pc.id=pcr.category_id
+                WHERE pcr.product_id IN ({placeholders})
+                ORDER BY pcr.product_id, pc.category_name
+                """
+            ),
+            params,
+        ).mappings().all()
+    except SQLAlchemyError:
+        relation_rows = []
+
+    relation_names: dict[int, list[str]] = {}
+    for row in relation_rows:
+        name = str(row["category_name"] or "").strip()
+        if name:
+            relation_names.setdefault(int(row["product_id"]), []).append(name)
+    for product_id, names in relation_names.items():
+        result[product_id] = "、".join(dict.fromkeys(names))
+
+    return {product_id: result.get(product_id, "") for product_id in product_ids}
 
 
 def _date_text(value: date | None) -> str | None:
@@ -122,6 +189,7 @@ def get_inventory_analysis(
     stagnant_aging_days: int = DEFAULT_STAGNANT_AGING_DAYS,
     stagnant_cover_days: int = DEFAULT_STAGNANT_COVER_DAYS,
     detail_warehouses: bool = False,
+    detail_product_categories: bool = False,
 ) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     department_id = int(department["id"])
@@ -136,19 +204,21 @@ def get_inventory_analysis(
     latest_aging_date, aging = _aging_by_product(db, department_id, scope)
 
     categories = {
-        key: {"key": key, "label": label, "sku_count": 0, "stock_qty": 0.0}
+        key: {"key": key, "label": label, "sku_count": 0, "stock_qty": 0.0, "sales30_qty": 0.0}
         for key, label in CATEGORY_LABELS.items()
     }
     rows: list[dict[str, Any]] = []
     for p in products:
         stock = _number(p.get("stock"))
-        if stock <= 0:
+        sales30 = _number(p.get("sales30"))
+        # Keep zero-stock products with recent sales as a separate replenishment class.
+        if stock <= 0 and sales30 <= 0:
             continue
         age = aging.get(int(p["product_id"]), {})
         weighted_age = age.get("weighted_aging_days")
-        cat = classify_inventory_health(
+        cat = "stockout" if stock <= 0 else classify_inventory_health(
             stock=stock,
-            sales30=_number(p.get("sales30")),
+            sales30=sales30,
             cover_days=p.get("cover_days"),
             weighted_aging_days=weighted_age,
             high_cover_days=high_cover_days,
@@ -157,6 +227,7 @@ def get_inventory_analysis(
         )
         categories[cat]["sku_count"] += 1
         categories[cat]["stock_qty"] += stock
+        categories[cat]["sales30_qty"] += sales30
         rows.append(
             {
                 "product_id": p["product_id"],
@@ -165,9 +236,11 @@ def get_inventory_analysis(
                 "category": cat,
                 "category_label": CATEGORY_LABELS[cat],
                 "stock_qty": _round(stock, 2),
+                "sales_yesterday": _round(_number(p.get("sales_yesterday")), 2),
                 "sales7": _round(_number(p.get("sales7")), 2),
                 "sales14": _round(_number(p.get("sales14")), 2),
                 "sales30": _round(_number(p.get("sales30")), 2),
+                "sales_last_month": _round(_number(p.get("sales_last_month")), 2),
                 "predicted_daily": _round(_number(p.get("predicted_daily")), 2),
                 "cover_days": _round(p.get("cover_days"), 1),
                 "weighted_aging_days": _round(weighted_age, 1) if weighted_age is not None else None,
@@ -178,7 +251,7 @@ def get_inventory_analysis(
     for info in categories.values():
         info["stock_qty"] = _round(info["stock_qty"], 2)
 
-    severity = {"no_sales": 3, "stagnant": 2, "high": 1, "healthy": 0}
+    severity = {"stockout": 4, "no_sales": 3, "stagnant": 2, "high": 1, "healthy": 0}
     rows.sort(
         key=lambda r: (
             severity[r["category"]],
@@ -189,6 +262,12 @@ def get_inventory_analysis(
     )
     if category in CATEGORY_LABELS:
         rows = [r for r in rows if r["category"] == category]
+
+    if detail_product_categories and rows:
+        product_ids = sorted({int(row["product_id"]) for row in rows})
+        product_categories = _product_category_names_by_product(db, product_ids)
+        for row in rows:
+            row["product_category_names"] = product_categories.get(int(row["product_id"]), "")
 
     warehouse_columns: list[str] = []
     if detail_warehouses and latest_inventory_date:
@@ -227,6 +306,7 @@ def get_inventory_analysis(
             },
             "warehouse_columns": warehouse_columns,
             "detail_warehouses": detail_warehouses,
+            "detail_product_categories": detail_product_categories,
         },
         "categories": categories,
         "selected_category": category if category in CATEGORY_LABELS else None,

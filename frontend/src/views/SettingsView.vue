@@ -1,10 +1,11 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Users, Activity, ShieldCheck, TimerReset, UserPlus, X, Save, RefreshCw, Building2, ScrollText, Plus, Trash2, UserCog } from 'lucide-vue-next'
+import { Users, Activity, ShieldCheck, TimerReset, UserPlus, X, Save, RefreshCw, Building2, ScrollText, Plus, Trash2, UserCog, Tags, Pencil, CheckSquare } from 'lucide-vue-next'
 import { useAuthStore } from '../stores/auth'
 import {
   createAdminUser, fetchActivity, fetchAdminUser, fetchAdminUsers, fetchDepartmentExpiryRule, saveDepartmentExpiryRule, updateAdminUser,
-  fetchDepartments, createDepartment, updateDepartment, deleteDepartment, fetchDepartmentMembers, saveMembership, deleteMembership, fetchAuditLogs
+  fetchDepartments, createDepartment, updateDepartment, deleteDepartment, fetchDepartmentMembers, saveMembership, deleteMembership, fetchAuditLogs,
+  fetchProductCategoryAdmin, createProductCategory, renameProductCategory, deleteProductCategory, assignProductCategories
 } from '../api/admin'
 
 const auth=useAuthStore(),tab=ref('users'),loading=ref(false),error=ref('')
@@ -15,6 +16,8 @@ const rule=reactive({near_days:30,near_pct:10,warn_days:90,warn_pct:25})
 const departments=ref([]),deptForm=reactive({code:'',name:''}),memberModal=ref(false),memberDepartment=ref(null),members=ref([]),memberForm=reactive({user_id:'',role:'member',status:'enabled'})
 const audit=ref({items:[],actions:[]}),auditFilter=reactive({department_code:'',user_id:'',action_type:'',days:7})
 const canGrantAdmin=computed(()=>!!auth.user?.is_system_admin),deptName=computed(()=>auth.departmentName),auditDepartmentOptions=computed(()=>auth.memberships.filter(m=>canGrantAdmin.value||m.role==='dept_admin'))
+const canManageProductCategories=computed(()=>canGrantAdmin.value||auth.currentMembership?.role==='dept_admin')
+const categoryAdmin=ref({items:[],categories:[],total:0,page:1,page_size:25}),categorySearch=ref(''),categoryFilter=ref(''),categoryPage=ref(1),categorySelected=ref([]),categoryDrawer=ref(false),categoryForm=reactive({category_ids:[]}),categoryName=ref(''),editingCategoryId=ref(null)
 function presence(v){return {online:'在线',recent:'最近活跃',offline:'离线',inactive:'长期未活跃'}[v]||'—'}
 function roleText(v){return v==='dept_admin'?'部门管理员':'普通用户'}
 function fmt(v){return v==null?'—':v}
@@ -44,10 +47,16 @@ async function changeMembership(m,key,value){try{await saveMembership(memberDepa
 async function removeMembership(m){if(!confirm(`确定将 ${m.username} 从 ${memberDepartment.value.name} 移除吗？`))return;try{await deleteMembership(memberDepartment.value.code,m.user_id);await Promise.all([loadMembers(),loadDepartments()])}catch(e){error.value=e.message}}
 
 async function loadAudit(){try{audit.value=await fetchAuditLogs({departmentCode:auditFilter.department_code,userId:auditFilter.user_id,actionType:auditFilter.action_type,days:auditFilter.days,limit:300})}catch(e){error.value=e.message}}
+async function loadProductCategories(){if(!canManageProductCategories.value)return;loading.value=true;try{categoryAdmin.value=await fetchProductCategoryAdmin({search:categorySearch.value,categoryId:categoryFilter.value,page:categoryPage.value,pageSize:25});categorySelected.value=[]}catch(e){error.value=e.message}finally{loading.value=false}}
+function openCategoryEditor(product){categoryForm.category_ids=(product.categories||[]).map(x=>x.id);categoryDrawer.value=product;}
+async function saveCategoryAssignment(){try{const productIds=categoryDrawer.value&&typeof categoryDrawer.value==='object'?[categoryDrawer.value.product_id]:categorySelected.value;await assignProductCategories({product_ids:productIds,category_ids:categoryForm.category_ids});categoryDrawer.value=false;await loadProductCategories()}catch(e){error.value=e.message}}
+async function saveCategoryDictionary(){try{if(editingCategoryId.value){await renameProductCategory(editingCategoryId.value,{name:categoryName.value})}else{await createProductCategory({name:categoryName.value})}categoryName.value='';editingCategoryId.value=null;await loadProductCategories()}catch(e){error.value=e.message}}
+async function removeCategory(category){if(!confirm(`确定删除分类“${category.name}”吗？`))return;try{await deleteProductCategory(category.id);await loadProductCategories()}catch(e){error.value=e.message}}
 function detailText(v){if(!v)return '—';if(typeof v==='string')return v;try{return JSON.stringify(v)}catch{return String(v)}}
 
 watch([search,role,membershipStatus],()=>{clearTimeout(window.__bjrUserSearch);window.__bjrUserSearch=setTimeout(loadUsers,250)})
-watch(()=>auth.departmentCode,async()=>{await Promise.all([loadUsers(),loadActivity(),loadRule()])})
+watch(()=>auth.departmentCode,async()=>{await Promise.all([loadUsers(),loadActivity(),loadRule(),loadProductCategories()])})
+watch([categorySearch,categoryFilter],()=>{categoryPage.value=1;clearTimeout(window.__bjrCategorySearch);window.__bjrCategorySearch=setTimeout(loadProductCategories,250)})
 onMounted(()=>Promise.all([loadUsers(),loadActivity(),loadRule(),loadDepartments()]))
 </script>
 
@@ -61,6 +70,7 @@ onMounted(()=>Promise.all([loadUsers(),loadActivity(),loadRule(),loadDepartments
     <button :class="{active:tab==='activity'}" @click="tab='activity';loadActivity()"><Activity :size="16"/>用户活跃</button>
     <button :class="{active:tab==='audit'}" @click="tab='audit';loadAudit()"><ScrollText :size="16"/>操作审计</button>
     <button :class="{active:tab==='rules'}" @click="tab='rules';loadRule()"><TimerReset :size="16"/>效期规则</button>
+    <button v-if="canManageProductCategories" :class="{active:tab==='product-categories'}" @click="tab='product-categories';loadProductCategories()"><Tags :size="16"/>商品分类</button>
     <button :class="{active:tab==='matrix'}" @click="tab='matrix'"><ShieldCheck :size="16"/>权限矩阵</button>
   </div>
 
@@ -89,10 +99,27 @@ onMounted(()=>Promise.all([loadUsers(),loadActivity(),loadRule(),loadDepartments
     <section class="settings-rule-grid"><article class="panel"><div class="section-head"><div><h3>{{deptName}}效期规则</h3><span>部门管理员可设置本部门规则</span></div></div><div class="settings-rule-form"><label>临期：剩余天数 ≤<input v-model.number="rule.near_days" type="number" min="0"/></label><label>临期：剩余效期% ≤<input v-model.number="rule.near_pct" type="number" min="0" max="100"/></label><label>预警：剩余天数 ≤<input v-model.number="rule.warn_days" type="number" min="0"/></label><label>预警：剩余效期% ≤<input v-model.number="rule.warn_pct" type="number" min="0" max="100"/></label></div><p class="muted-text">触发逻辑：天数 OR 百分比；满足任一条件即进入对应风险等级。</p><button class="settings-primary" @click="saveRule"><Save :size="16"/>保存部门规则</button></article><article class="panel"><h3>规则优先级</h3><div class="rule-priority-real"><div><b>单品规则</b><span>最高</span></div><i>→</i><div class="active"><b>部门规则</b><span>{{deptName}}</span></div><i>→</i><div><b>全局规则</b><span>系统默认</span></div></div></article></section>
   </template>
 
+  <template v-if="tab==='product-categories'&&canManageProductCategories">
+    <section class="panel settings-toolbar product-category-admin-toolbar">
+      <input v-model="categorySearch" placeholder="搜索商品名、商家编码、规格或品牌"/>
+      <select v-model="categoryFilter"><option value="">全部分类</option><option v-for="c in categoryAdmin.categories||[]" :key="c.id" :value="c.id">{{c.name}}</option></select>
+      <button class="settings-mini" @click="loadProductCategories"><RefreshCw :size="14"/>刷新</button>
+      <button class="settings-primary" :disabled="!categorySelected.length" @click="categoryForm.category_ids=[];categoryDrawer='batch'"><CheckSquare :size="15"/>批量设置分类（{{categorySelected.length}}）</button>
+    </section>
+    <section class="panel settings-table-wrap">
+      <div class="section-head"><div><h3>商品分类维护</h3><span>{{categoryAdmin.department?.name}} · 部门管理员仅能维护本部门商品</span></div><span>共 {{categoryAdmin.total||0}} 个商品</span></div>
+      <table><thead><tr><th><input type="checkbox" :checked="categorySelected.length && categorySelected.length===categoryAdmin.items.length" @change="categorySelected=$event.target.checked?(categoryAdmin.items||[]).map(x=>x.product_id):[]"/></th><th>商品</th><th>规格/品牌</th><th>当前分类</th><th>操作</th></tr></thead><tbody>
+        <tr v-for="p in categoryAdmin.items||[]" :key="p.product_id"><td><input v-model="categorySelected" type="checkbox" :value="p.product_id"/></td><td><strong>{{p.name}}</strong><small>{{p.sku}}</small></td><td>{{[p.spec,p.brand].filter(Boolean).join(' · ')||'—'}}</td><td>{{p.categories?.map(x=>x.name).join('、')||'未分类'}}</td><td><button class="settings-mini" @click="openCategoryEditor(p)"><Pencil :size="13"/>编辑</button></td></tr><tr v-if="!(categoryAdmin.items||[]).length&&!loading"><td colspan="5" class="dc-empty">暂无可维护商品</td></tr></tbody></table>
+      <div class="table-pagination"><span>第 {{categoryAdmin.page||1}} 页</span><button class="pagination-button" :disabled="(categoryAdmin.page||1)<=1" @click="categoryPage--;loadProductCategories()">上一页</button><button class="pagination-button" :disabled="(categoryAdmin.page||1)*categoryAdmin.page_size>=categoryAdmin.total" @click="categoryPage++;loadProductCategories()">下一页</button></div>
+    </section>
+    <section v-if="canGrantAdmin" class="panel settings-table-wrap"><div class="section-head"><div><h3>分类字典</h3><span>分类名称是全局商品主数据，仅系统管理员可新增、改名或删除。</span></div></div><div class="category-dictionary-form"><input v-model="categoryName" placeholder="新增分类名称"/><button class="settings-primary" @click="saveCategoryDictionary"><Plus :size="15"/>{{editingCategoryId?'保存改名':'新增分类'}}</button><button v-if="editingCategoryId" class="settings-mini" @click="editingCategoryId=null;categoryName=''">取消</button></div><div class="category-dictionary-list"><span v-for="c in categoryAdmin.categories||[]" :key="c.id" class="context-chip"><b>{{c.name}}</b><button class="icon-button" title="改名" @click="editingCategoryId=c.id;categoryName=c.name"><Pencil :size="12"/></button><button class="icon-button danger" title="删除" @click="removeCategory(c)"><Trash2 :size="12"/></button></span></div></section>
+  </template>
+
   <template v-if="tab==='matrix'"><section class="panel settings-table-wrap"><h3>权限矩阵</h3><table><thead><tr><th>能力</th><th>系统管理员</th><th>部门管理员</th><th>普通用户</th></tr></thead><tbody><tr><td>跨部门查看</td><td>✓</td><td>—</td><td>—</td></tr><tr><td>本部门经营数据</td><td>✓</td><td>✓</td><td>✓</td></tr><tr><td>本部门全部用户待办</td><td>✓</td><td>✓</td><td>—</td></tr><tr><td>审批本部门删除待办</td><td>✓</td><td>✓（不能审批自己）</td><td>—</td></tr><tr><td>Excel/CSV 数据导入</td><td>✓</td><td>✓</td><td><b class="text-error">永久禁止</b></td></tr><tr><td>管理本部门普通用户</td><td>✓</td><td>✓</td><td>—</td></tr><tr><td>新增/删除部门</td><td>✓</td><td>—</td><td>—</td></tr><tr><td>分配多部门/部门管理员</td><td>✓</td><td>—</td><td>—</td></tr><tr><td>操作审计</td><td>✓ 全部</td><td>✓ 自己管理部门</td><td>—</td></tr></tbody></table></section></template>
 
   <div v-if="drawer" class="settings-modal-mask" @click.self="drawer=false"><div class="settings-modal"><div class="section-head"><div><h3>{{editing?'编辑用户':'新增用户'}}</h3><span>{{editing?'user_id 永久不可修改、不复用':'新增到 '+deptName}}</span></div><button class="icon-button" @click="drawer=false"><X :size="17"/></button></div><div class="settings-edit-grid"><label>user_id<input v-model="form.user_id" :disabled="!!editing" placeholder="如 U0010"/></label><label>用户名<input v-model="form.username"/></label><label>{{editing?'重置密码（留空不改）':'初始密码'}}<input v-model="form.password" type="password" autocomplete="new-password"/></label><label>当前部门角色<select v-model="form.role" :disabled="!canGrantAdmin"><option value="member">普通用户</option><option v-if="canGrantAdmin" value="dept_admin">部门管理员</option></select></label><label v-if="editing">当前部门成员状态<select v-model="form.membership_status"><option value="enabled">启用</option><option value="disabled">停用</option></select></label><label v-if="editing&&auth.user?.is_system_admin">全局账号状态<select v-model="form.account_status"><option value="enabled">启用</option><option value="disabled">停用</option></select></label></div><div class="settings-modal-actions"><button class="settings-mini" @click="drawer=false">取消</button><button class="settings-primary" @click="saveUser"><Save :size="16"/>保存</button></div></div></div>
 
   <div v-if="memberModal" class="settings-modal-mask" @click.self="memberModal=false"><div class="settings-modal settings-modal-wide"><div class="section-head"><div><h3>{{memberDepartment?.name}} · 成员管理</h3><span>系统管理员可以让同一用户属于多个部门，并为每个部门单独指定角色。</span></div><button class="icon-button" @click="memberModal=false"><X :size="17"/></button></div><div class="member-add-grid"><input v-model="memberForm.user_id" placeholder="已有用户 user_id"/><select v-model="memberForm.role"><option value="member">普通用户</option><option value="dept_admin">部门管理员</option></select><button class="settings-primary" @click="addMembership"><Plus :size="14"/>加入部门</button></div><div class="settings-table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>成员状态</th><th>全局账号</th><th>操作</th></tr></thead><tbody><tr v-for="m in members" :key="m.user_id"><td><strong>{{m.username}}</strong><small>{{m.user_id}}</small></td><td><select :value="m.role" @change="changeMembership(m,'role',$event.target.value)"><option value="member">普通用户</option><option value="dept_admin">部门管理员</option></select></td><td><select :value="m.membership_status" @change="changeMembership(m,'status',$event.target.value)"><option value="enabled">启用</option><option value="disabled">停用</option></select></td><td>{{m.account_status==='enabled'?'启用':'停用'}}</td><td><button class="settings-mini danger" @click="removeMembership(m)"><Trash2 :size="13"/>移除</button></td></tr></tbody></table></div></div></div>
+  <div v-if="categoryDrawer" class="settings-modal-mask" @click.self="categoryDrawer=false"><div class="settings-modal category-assignment-modal"><div class="section-head"><div><h3>{{categoryDrawer==='batch'?'批量设置商品分类':'编辑商品分类'}}</h3><span>{{categoryDrawer==='batch'?`已选择 ${categorySelected.length} 个商品`:categoryDrawer.name}}</span></div><button class="icon-button" @click="categoryDrawer=false"><X :size="17"/></button></div><div class="category-check-grid"><label v-for="c in categoryAdmin.categories||[]" :key="c.id"><input v-model="categoryForm.category_ids" type="checkbox" :value="c.id"/>{{c.name}}</label><span v-if="!(categoryAdmin.categories||[]).length" class="dc-empty">暂无分类，请先建立分类字典</span></div><p class="muted-text">保存会覆盖所选商品当前分类；取消全选即可清空分类。</p><div class="settings-modal-actions"><button class="settings-mini" @click="categoryDrawer=false">取消</button><button class="settings-primary" @click="saveCategoryAssignment"><Save :size="16"/>保存</button></div></div></div>
 </div>
 </template>

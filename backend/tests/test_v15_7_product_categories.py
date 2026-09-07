@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from app.services.dashboard_service import DashboardScope, _scope_clauses
+from app.services.analysis_service import _product_category_names_by_product
 from app.services.import_db_service import _sync_product_categories
 from app.services.preset_service import normalize_int_list
 from sqlalchemy import create_engine, text
@@ -36,6 +37,30 @@ class ProductCategoryCompletionTests(unittest.TestCase):
             self.assertEqual(db.execute(text("SELECT COUNT(*) FROM product_category_relations WHERE product_id=8")).scalar_one(), 2)
             _sync_product_categories(db, 8, None)
             self.assertEqual(db.execute(text("SELECT COUNT(*) FROM product_category_relations WHERE product_id=8")).scalar_one(), 0)
+
+    def test_inventory_category_names_fall_back_to_legacy_product_field(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with engine.begin() as conn:
+            conn.execute(text("CREATE TABLE products(id INTEGER PRIMARY KEY,category TEXT)"))
+            conn.execute(text("CREATE TABLE product_categories(id INTEGER PRIMARY KEY,category_name TEXT UNIQUE)"))
+            conn.execute(text("CREATE TABLE product_category_relations(product_id INTEGER,category_id INTEGER)"))
+            conn.execute(text("INSERT INTO products(id,category) VALUES(1,'饮料，碳酸'),(2,'旧分类')"))
+            conn.execute(text("INSERT INTO product_categories(id,category_name) VALUES(9,'新分类')"))
+            conn.execute(text("INSERT INTO product_category_relations(product_id,category_id) VALUES(2,9)"))
+        with Session(engine) as db:
+            categories = _product_category_names_by_product(db, [1, 2])
+        self.assertEqual(categories[1], "饮料、碳酸")
+        self.assertEqual(categories[2], "新分类")
+
+    def test_inventory_category_names_work_when_relation_tables_are_missing(self):
+        """Restored older databases may have products.category but no 0157 tables yet."""
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with engine.begin() as conn:
+            conn.execute(text("CREATE TABLE products(id INTEGER PRIMARY KEY,category TEXT)"))
+            conn.execute(text("INSERT INTO products(id,category) VALUES(7,'饮品|无糖\\n碳酸')"))
+        with Session(engine) as db:
+            categories = _product_category_names_by_product(db, [7])
+        self.assertEqual(categories[7], "饮品、无糖、碳酸")
 
     def test_category_migration_backfills_and_schema_has_tables(self):
         root = Path(__file__).resolve().parents[1]

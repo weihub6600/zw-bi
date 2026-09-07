@@ -34,6 +34,14 @@ class InventoryClassificationTests(unittest.TestCase):
             "healthy",
         )
 
+    def test_zero_stock_is_not_mixed_into_health_classifier(self):
+        # get_inventory_analysis assigns the dedicated stockout class before
+        # calling this positive-stock health classifier.
+        self.assertEqual(
+            classify_inventory_health(stock=0, sales30=20, cover_days=None, weighted_aging_days=None),
+            "healthy",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

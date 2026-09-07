@@ -28,7 +28,7 @@ SALES_HEADERS = ["业务日期", "店铺", "仓库", "商家编码", "商品名�
 INVENTORY_HEADERS = ["快照日期", "仓库", "商家编码", "商品名称", "库存数量", "生产日期", "过期日期"]
 AGING_HEADERS = ["统计日期", "仓库", "商家编码", "商品名称", "库存数量", "库龄天数"]
 # 库存明细（InventoryView 的 SKU 级库存健康度）
-INVENTORY_ANALYSIS_HEADERS = ["商家编码", "商品名称", "库存分类", "库存数量", "近7天销量", "近14天销量", "近30天销量", "预测日均销量", "可售天数", "加权库龄天数", "最大库龄天数"]
+INVENTORY_ANALYSIS_HEADERS = ["商家编码", "商品名称", "库存分类", "库存数量", "昨日销量", "近7天销量", "近14天销量", "近30天销量", "上月销量", "预测日均销量", "可售天数", "加权库龄天数", "最大库龄天数"]
 # 效期批次明细（ExpiryView 的批次级效期）
 EXPIRY_BATCH_HEADERS = ["仓库", "商家编码", "商品名称", "库存数量", "生产日期", "过期日期", "保质总天数", "剩余天数", "剩余效期%", "效期状态", "规则来源"]
 
@@ -382,6 +382,7 @@ def export_inventory_analysis(
     product_category_ids: Iterable[int] = (),
     category: str | None = None,
     detail_warehouses: bool = False,
+    detail_product_categories: bool = False,
 ) -> dict[str, Any]:
     """导出库存明细（InventoryView 的 SKU 级库存健康度），复用 get_inventory_analysis 完整筛选与权限。"""
     scope = _scope_from_params(
@@ -392,22 +393,29 @@ def export_inventory_analysis(
         product_category_ids=product_category_ids,
     )
     result = get_inventory_analysis(
-        db, scope, category=category, detail_warehouses=detail_warehouses
+        db, scope, category=category, detail_warehouses=detail_warehouses,
+        detail_product_categories=detail_product_categories,
     )
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     rows = result["rows"]
     warehouse_columns = result.get("meta", {}).get("warehouse_columns", [])
     headers = INVENTORY_ANALYSIS_HEADERS
+    if detail_product_categories:
+        headers = ["商家编码", "商品名称", "商品分类", "库存分类", "库存数量", "昨日销量", "近7天销量", "近14天销量", "近30天销量", "上月销量", "预测日均销量", "可售天数", "加权库龄天数", "最大库龄天数"]
     if detail_warehouses:
         headers = [
-            "商家编码", "商品名称", "库存分类", *warehouse_columns,
-            "总库存", "近7天销量", "近14天销量", "近30天销量", "预测日均销量",
+            "商家编码", "商品名称",
+            *( ["商品分类"] if detail_product_categories else [] ),
+            "库存分类", *warehouse_columns,
+            "总库存", "昨日销量", "近7天销量", "近14天销量", "近30天销量", "上月销量", "预测日均销量",
             "可售天数", "加权库龄天数", "最大库龄天数",
         ]
     data = [
         [
-            r["sku"], r["name"], r["category_label"], _to_float(r["stock_qty"]),
-            _to_float(r["sales7"]), _to_float(r["sales14"]), _to_float(r["sales30"]),
+            r["sku"], r["name"],
+            *([r.get("product_category_names", "")] if detail_product_categories else []),
+            r["category_label"], _to_float(r["stock_qty"]),
+            _to_float(r.get("sales_yesterday")), _to_float(r["sales7"]), _to_float(r["sales14"]), _to_float(r["sales30"]), _to_float(r.get("sales_last_month")),
             _to_float(r["predicted_daily"]), _to_float(r["cover_days"]),
             _to_float(r["weighted_aging_days"]), _to_float(r["max_aging_days"]),
         ]
@@ -416,10 +424,12 @@ def export_inventory_analysis(
     if detail_warehouses:
         data = [
             [
-                r["sku"], r["name"], r["category_label"],
+                r["sku"], r["name"],
+                *([r.get("product_category_names", "")] if detail_product_categories else []),
+                r["category_label"],
                 *[_to_float(r.get("warehouse_stocks", {}).get(warehouse, 0)) for warehouse in warehouse_columns],
-                _to_float(r["stock_qty"]), _to_float(r["sales7"]), _to_float(r["sales14"]),
-                _to_float(r["sales30"]), _to_float(r["predicted_daily"]),
+                _to_float(r["stock_qty"]), _to_float(r.get("sales_yesterday")), _to_float(r["sales7"]), _to_float(r["sales14"]),
+                _to_float(r["sales30"]), _to_float(r.get("sales_last_month")), _to_float(r["predicted_daily"]),
                 _to_float(r["cover_days"]), _to_float(r["weighted_aging_days"]),
                 _to_float(r["max_aging_days"]),
             ]

@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import {
-  ArrowUpDown, Boxes, CalendarDays, ChevronRight, ClipboardPlus, History,
+  ArrowUpDown, Boxes, CalendarDays, ChevronLeft, ChevronRight, ClipboardPlus, Download, History,
   ListFilter, PackageSearch, RotateCcw, Search, SlidersHorizontal, Sparkles,
   Store, TrendingDown, TrendingUp, Warehouse
 } from 'lucide-vue-next'
@@ -16,10 +16,11 @@ import {
   searchProducts,
   fetchProductCategories
 } from '../api/analysis'
+import { exportInventoryAnalysis } from '../api/exports'
 
 const route=useRoute(),router=useRouter(),f=useFilterStore()
 const data=ref(null),error=ref(''),loading=ref(false),note=ref(''),noteState=ref('')
-const listRows=ref([]),listTitle=ref('')
+const listRows=ref([]),listTitle=ref(''),listPage=ref(1),listPageSize=ref(20),listExporting=ref(false),listExportError=ref(''),listExportCount=ref(null)
 const chartEl=ref(null),shopChartEl=ref(null);let chart=null,shopChart=null,serial=0,searchTimer=null,skipNextShopWatch=false
 const searchText=ref(''),searchRows=ref([]),searchLoading=ref(false),searchOpen=ref(false),searchError=ref('')
 const productCategoryId=ref(null)
@@ -30,11 +31,14 @@ const stockCategory=computed(()=>String(route.query.stock_category||'').trim())
 const expiryStatus=computed(()=>String(route.query.expiry_status||'').trim())
 const listMode=computed(()=>!sku.value && (!!stockCategory.value || !!expiryStatus.value))
 const priceVisible=computed(()=>data.value?.meta?.price_visible===true)
-const stockLabels={healthy:'健康库存',high:'高库存',stagnant:'呆滞库存',no_sales:'无销量库存'}
+const stockLabels={healthy:'健康库存',high:'高库存',stagnant:'呆滞库存',no_sales:'无销量库存',stockout:'缺货动销'}
 const sortedShopSales=computed(()=>sortRows(data.value?.shop_sales_options||data.value?.shop_sales||[],shopSort.value))
 const showYesterdaySales=computed(()=>data.value?.meta?.yesterday_sales_available===true)
 const sortedExpiry=computed(()=>sortRows(data.value?.expiry_batches||[],expirySort.value))
 const selectedProductLabel=computed(()=>data.value?`${data.value.product.name} · ${data.value.product.sku}`:'')
+const listTotalPages=computed(()=>Math.max(1,Math.ceil(listRows.value.length/listPageSize.value)))
+const pagedListRows=computed(()=>{const start=(listPage.value-1)*listPageSize.value;return listRows.value.slice(start,start+listPageSize.value)})
+const listPageNumbers=computed(()=>{const total=listTotalPages.value;const current=listPage.value;const pages=[];const start=Math.max(1,Math.min(current-2,total-4));const end=Math.min(total,start+4);for(let p=start;p<=end;p++)pages.push(p);return pages})
 const shopContext=computed(()=>!f.shops.length?'全部店铺':f.shops.length<=2?f.shops.join('、'):`${f.shops.slice(0,2).join('、')} 等 ${f.shops.length} 个`)
 const warehouseContext=computed(()=>!f.warehouses.length?'全部仓库':f.warehouses.length<=2?f.warehouses.join('、'):`${f.warehouses.slice(0,2).join('、')} 等 ${f.warehouses.length} 个`)
 const sourceContext=computed(()=>stockCategory.value?`库存分类：${stockLabels[stockCategory.value]||stockCategory.value}`:expiryStatus.value?`效期状态：${expiryStatus.value}`:'')
@@ -57,6 +61,21 @@ function clearWarehouseFilter(){if(!f.warehouses.length)return;f.warehouses=[];m
 function clearCategory(){const q={...route.query};delete q.stock_category;delete q.expiry_status;router.replace({path:'/product',query:q})}
 function resetDrillContext(){f.shops=[];f.warehouses=[];markCustomContext();clearCategory()}
 function toggleShop(shop,event){const selected=new Set(f.shops);if(event.target.checked)selected.add(shop);else selected.delete(shop);applyShopSelection(selected)}
+function resetListPage(){listPage.value=1}
+function goListPage(page){listPage.value=Math.min(Math.max(1,page),listTotalPages.value)}
+async function downloadCategoryList(){
+  if(!stockCategory.value)return
+  listExporting.value=true;listExportError.value=''
+  try{
+    const r=await exportInventoryAnalysis({
+      departmentCode:f.departmentCode,shops:f.shops,warehouses:f.warehouses,days:30,
+      productSearch:f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,productCategoryIds:f.productCategoryIds,
+      category:stockCategory.value,
+    })
+    listExportCount.value=r.rowCount
+  }catch(e){listExportError.value=e.message}
+  finally{listExporting.value=false}
+}
 
 async function runSearch(value=searchText.value){
   const q=String(value||'').trim();searchError.value=''
@@ -78,11 +97,16 @@ function selectProduct(row){searchText.value='';searchRows.value=[];searchOpen.v
 async function searchEnter(){if(searchRows.value.length){selectProduct(searchRows.value[0]);return}await runSearch();if(searchRows.value.length)selectProduct(searchRows.value[0])}
 
 async function loadCategoryList(id){
+  resetListPage()
+  listExportCount.value=null;listExportError.value=''
   if(stockCategory.value){
     const r=await fetchInventoryAnalysis({days:30,shops:f.shops,warehouses:f.warehouses,productSearch:f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,productCategoryIds:f.productCategoryIds,category:stockCategory.value})
     if(id!==serial)return
     listTitle.value=stockLabels[stockCategory.value]||'库存分类'
-    listRows.value=(r.rows||[]).map(x=>({sku:x.sku,name:x.name,stock:x.stock_qty,sales30:x.sales30,metric:x.cover_days==null?'—':`${Number(x.cover_days).toFixed(1)}天`,metricLabel:'预计周转'}));return
+    const sourceRows=stockCategory.value==='stockout'
+      ? (r.rows||[]).filter(x=>Number(x.stock_qty||0)<=0&&Number(x.sales30||0)>0)
+      : (r.rows||[])
+    listRows.value=sourceRows.map(x=>({sku:x.sku,name:x.name,stock:stockCategory.value==='stockout'?0:x.stock_qty,salesYesterday:x.sales_yesterday,sales7:x.sales7,sales14:x.sales14,sales30:x.sales30,salesLastMonth:x.sales_last_month,metric:stockCategory.value==='stockout'?`${n(x.sales30)}件`:(x.cover_days==null?'—':`${Number(x.cover_days).toFixed(1)}天`),metricLabel:stockCategory.value==='stockout'?'近30天销量':'预计周转'}));return
   }
   if(expiryStatus.value){
     const r=await fetchExpiryBatches({warehouses:f.warehouses,productSearch:f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,productCategoryIds:f.productCategoryIds,statuses:[expiryStatus.value],limit:5000})
@@ -167,7 +191,7 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
   <input
     v-model="searchText"
     autocomplete="off"
-    placeholder="输入商品名或商家编码；空格分隔多个关键词（同时命中）"
+    placeholder="输入商家编码或商品名称；也可用空格分隔多个关键词（同时命中）"
     @focus="(searchText||productCategoryId!=null)&&runSearch()"
     @keyup.enter="searchEnter"
   />
@@ -201,10 +225,42 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
     </section>
 
     <section v-if="listMode" class="panel product-list-mode product-list-v154">
-      <div class="section-head"><div><h3>{{ listTitle }}</h3><span>当前口径下 {{ listRows.length }} 个商品 · 点击商品继续下钻</span></div></div>
+      <div class="section-head"><div><h3>{{ listTitle }}</h3><span>当前口径下 {{ listRows.length }} 个商品 · 点击商品继续下钻</span></div><div class="product-list-head-actions"><span v-if="listRows.length">第 {{ listPage }}/{{ listTotalPages }} 页</span><button v-if="stockCategory" class="rank-tab" :disabled="listExporting" @click="downloadCategoryList"><Download :size="14"/>{{ listExporting?'正在生成…':`下载当前分类${listExportCount!=null?'（'+listExportCount+'条）':''}` }}</button></div></div>
+      <div v-if="listExportError" class="api-error compact"><span>{{ listExportError }}</span></div>
       <div class="rank-list">
-        <div v-for="(r,i) in listRows" :key="r.sku" class="rank-row product-category-row"><b class="rank-num">{{ String(i+1).padStart(2,'0') }}</b><div class="rank-product"><RouterLink class="table-product-link" :to="{path:'/product',query:{sku:r.sku,stock_category:stockCategory||undefined,expiry_status:expiryStatus||undefined}}">{{ r.name }}</RouterLink><small>{{ r.sku }}</small></div><div><small>库存</small><b>{{ n(r.stock) }}</b></div><div><small v-if="r.sales30!=null">30天销量</small><b v-if="r.sales30!=null">{{ n(r.sales30) }}</b></div><div><small>{{ r.metricLabel }}</small><b>{{ r.metric }}</b></div></div>
+        <div v-for="(r,i) in pagedListRows" :key="r.sku" :class="['rank-row','product-category-row',{ 'stockout-row': stockCategory==='stockout', 'expanded-row': stockCategory==='healthy'||stockCategory==='high' }]">
+          <b class="rank-num">{{ String((listPage-1)*listPageSize+i+1).padStart(2,'0') }}</b>
+          <div class="rank-product"><RouterLink class="table-product-link" :to="{path:'/product',query:{sku:r.sku,stock_category:stockCategory||undefined,expiry_status:expiryStatus||undefined}}">{{ r.name }}</RouterLink><small>{{ r.sku }}</small></div>
+          <template v-if="stockCategory==='stockout'">
+            <div><small>库存</small><b>{{ n(r.stock) }}</b></div>
+            <div><small>昨日销量</small><b>{{ n(r.salesYesterday) }}</b></div>
+            <div><small>近7天销量</small><b>{{ n(r.sales7) }}</b></div>
+            <div><small>近14天销量</small><b>{{ n(r.sales14) }}</b></div>
+            <div><small>近30天销量</small><b>{{ n(r.sales30) }}</b></div>
+            <div><small>上月销量</small><b>{{ n(r.salesLastMonth) }}</b></div>
+          </template>
+          <template v-else-if="stockCategory==='healthy'||stockCategory==='high'">
+            <div><small>库存</small><b>{{ n(r.stock) }}</b></div>
+            <div><small>昨日销量</small><b>{{ n(r.salesYesterday) }}</b></div>
+            <div><small>7天销量</small><b>{{ n(r.sales7) }}</b></div>
+            <div><small>14天销量</small><b>{{ n(r.sales14) }}</b></div>
+            <div><small>30天销量</small><b>{{ n(r.sales30) }}</b></div>
+            <div><small>预计周转</small><b>{{ r.metric }}</b></div>
+          </template>
+          <template v-else>
+            <div><small>库存</small><b>{{ n(r.stock) }}</b></div>
+            <div><small v-if="r.sales30!=null">30天销量</small><b v-if="r.sales30!=null">{{ n(r.sales30) }}</b></div>
+            <div><small>{{ r.metricLabel }}</small><b>{{ r.metric }}</b></div>
+          </template>
+        </div>
         <div v-if="!listRows.length" class="rank-empty">当前分类和筛选条件下没有商品。</div>
+      </div>
+      <div v-if="listRows.length" class="table-pagination product-list-pagination">
+        <span>显示 {{ (listPage-1)*listPageSize+1 }}-{{ Math.min(listPage*listPageSize,listRows.length) }} / 共 {{ listRows.length }} 个商品</span>
+        <label>每页<select v-model.number="listPageSize" @change="resetListPage"><option :value="20">20</option><option :value="50">50</option><option :value="100">100</option></select>条</label>
+        <button class="pagination-button" :disabled="listPage===1" aria-label="上一页" title="上一页" @click="goListPage(listPage-1)"><ChevronLeft :size="14"/></button>
+        <button v-for="page in listPageNumbers" :key="page" :class="['pagination-button',{active:listPage===page}]" @click="goListPage(page)">{{ page }}</button>
+        <button class="pagination-button" :disabled="listPage===listTotalPages" aria-label="下一页" title="下一页" @click="goListPage(listPage+1)"><ChevronRight :size="14"/></button>
       </div>
     </section>
 

@@ -151,6 +151,7 @@ def download_inventory_analysis(
     product_category_ids: str = "",
     category: str = "",
     detail_warehouses: bool = False,
+    detail_product_categories: bool = False,
     actor: dict = Depends(require_actor),
     db: Session = Depends(get_db),
 ):
@@ -170,6 +171,7 @@ def download_inventory_analysis(
             product_category_ids=_split_int_csv(product_category_ids),
             category=category or None,
             detail_warehouses=detail_warehouses,
+            detail_product_categories=detail_product_categories,
         )
         return _xlsx_response(result["content"], result["filename"], row_count=result["row_count"], ascii_filename=result.get("ascii_filename", "export.xlsx"))
     except Exception as exc:

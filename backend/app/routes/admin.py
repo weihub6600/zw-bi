@@ -9,6 +9,8 @@ from ..db import get_db
 from ..services.admin_service import (
     activity_summary, create_user, get_department_expiry_rule, list_users,
     save_department_expiry_rule, update_user, user_detail,
+    list_product_category_admin, create_product_category, rename_product_category,
+    delete_product_category, set_product_categories,
 )
 from ..services.permission_service import PermissionDenied
 from ..services.department_service import list_departments, create_department, update_department, delete_department, list_department_members, set_membership, remove_membership
@@ -44,6 +46,15 @@ class ExpiryRuleBody(BaseModel):
     near_pct: float = Field(ge=0, le=100)
     warn_days: int = Field(ge=0, le=36500)
     warn_pct: float = Field(ge=0, le=100)
+
+
+class ProductCategoryBody(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class ProductCategoryAssignmentBody(BaseModel):
+    product_ids: list[int] = Field(min_length=1, max_length=500)
+    category_ids: list[int] = Field(default_factory=list, max_length=100)
 
 
 @router.get("/users")
@@ -85,6 +96,45 @@ def expiry_rule(department_code: str, actor: dict = Depends(require_actor), db: 
 @router.put("/expiry-rules/department/{department_code}")
 def update_expiry_rule(department_code: str, body: ExpiryRuleBody, actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try: return save_department_expiry_rule(db, actor, department_code, **body.model_dump())
+    except Exception as exc: db.rollback(); _handle(exc)
+
+
+@router.get("/product-categories")
+def product_category_admin(
+    department_code: str = "B2C",
+    search: str = "",
+    category_id: int | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=10, le=100),
+    actor: dict = Depends(require_actor),
+    db: Session = Depends(get_db),
+):
+    try:
+        return list_product_category_admin(db, actor, department_code, search=search, category_id=category_id, page=page, page_size=page_size)
+    except Exception as exc: _handle(exc)
+
+
+@router.post("/product-categories")
+def add_product_category(body: ProductCategoryBody, department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
+    try: return create_product_category(db, actor, department_code, body.name)
+    except Exception as exc: db.rollback(); _handle(exc)
+
+
+@router.put("/product-categories/assign")
+def assign_product_categories(body: ProductCategoryAssignmentBody, department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
+    try: return set_product_categories(db, actor, department_code, body.product_ids, body.category_ids)
+    except Exception as exc: db.rollback(); _handle(exc)
+
+
+@router.put("/product-categories/{category_id}")
+def edit_product_category(category_id: int, body: ProductCategoryBody, department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
+    try: return rename_product_category(db, actor, department_code, category_id, body.name)
+    except Exception as exc: db.rollback(); _handle(exc)
+
+
+@router.delete("/product-categories/{category_id}")
+def remove_product_category(category_id: int, department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
+    try: return delete_product_category(db, actor, department_code, category_id)
     except Exception as exc: db.rollback(); _handle(exc)
 
 

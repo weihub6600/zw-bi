@@ -79,6 +79,7 @@ def inventory_analysis(
     stagnant_aging_days: int = Query(180, ge=1, le=3650),
     stagnant_cover_days: int = Query(180, ge=1, le=3650),
     detail_warehouses: bool = False,
+    detail_product_categories: bool = False,
     actor: dict = Depends(require_actor),
     db: Session = Depends(get_db),
 ):
@@ -91,6 +92,7 @@ def inventory_analysis(
             stagnant_aging_days=stagnant_aging_days,
             stagnant_cover_days=stagnant_cover_days,
             detail_warehouses=detail_warehouses,
+            detail_product_categories=detail_product_categories,
         )
     except Exception as exc:
         _handle(exc)
