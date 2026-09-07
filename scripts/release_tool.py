@@ -87,7 +87,7 @@ MANIFEST_TEXT_SUFFIXES = {
     ".vue", ".yaml", ".yml", ".toml", ".ini", ".cfg",
 }
 # 无扩展名但按文本处理的文件
-MANIFEST_TEXT_NAMES = {"VERSION", ".env.example", ".gitignore", ".gitattributes"}
+MANIFEST_TEXT_NAMES = {"VERSION", "LICENSE", ".env.example", ".gitignore", ".gitattributes"}
 
 
 def is_manifest_text_file(path: Path) -> bool:

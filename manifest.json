@@ -1,8 +1,7 @@
 {
   "app": "百嘉瑞BI",
-  "version": "15.7.4",
+  "version": "15.7.5",
   "files": {
-    ".env": "33cf0fa389725b3bec2662e8fb5c569db60e38c254fb80a2a4acb990884aabdd",
     ".env.example": "f5ae8301c55a2a95ab23c90d27859d2cef5549b9ed6d4784f32082c91642e219",
     ".github/workflows/ci.yml": "3b74c78b84d5797bc6e9265aaf65ce7766285b524c1a911858f49be2a5814a80",
     ".gitignore": "2d4eae90db0c1784ef29e6005f223bdf59fa114322ee59cf0974562f7ffe645a",
@@ -150,11 +149,11 @@
     "frontend-dist/templates/销量数据模板.xlsx": "b3df435f10c6131d1a76b715051340090208c9fbb3db28cb300975c787cc5905",
     "frontend-dist/云仓费用计算器.html": "06512149ee5e13afd732d2f1872765c902c367f02d84e4d1ea1fb6e513b67e67",
     "install.sh": "797aacaa71d1fbd5e8697021acd7945db9543856d65c6c77f8bf77aa6c97f74a",
-    "LICENSE": "e48c74cb4e2c84fb595588dce19091283b0b018b4020e87613e13231238adcc3",
+    "LICENSE": "9511f20cf9a373ee01d627e3e87f67ee9b85a3186f110d6e3ac7786ad4f0ff4c",
     "README.md": "c66aa07a39bf6359b19ae9a57a515b0ca95c88cdcbeb9515cfc51d1a7cbef504",
     "README_DEPLOY.txt": "4bda8a4af3dc4a2c59b35e3e233609e7bf731d708311dbdbe25a5cb816599365",
-    "scripts/release_tool.py": "21e33f2e631487e510eb3d2e3777a6bf33a6fcbc262d3749372888d43979a248",
-    "VERSION": "a4f1e959ea06952a15eb01b87bfaef6def2c41fa96500932f81ba9bccd6fae61",
+    "scripts/release_tool.py": "0e595bcdc2b80758f89bb39c2cc58be4f4a208e9beb92457110fc7587423db49",
+    "VERSION": "5f104a6b19e3ba98b7de88f3f44abcb214adbb60fc8678b6cd663790bebc9fe3",
     "百嘉瑞BI_灾难恢复步骤.md": "756dc77087d0eadda4b5b896a5d2b72f3de0203f8f738b1b32e50686f36d6fbb"
   }
 }
