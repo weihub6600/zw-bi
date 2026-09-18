@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..core.auth import require_actor
+from ..core.config import settings
 from ..services.import_db_service import (
     DuplicateImportError,
     ImportExecutionError,
@@ -40,8 +41,15 @@ def _save_upload(upload: UploadFile) -> str:
     safe_stem = re.sub(r"[^0-9A-Za-z_\-\u4e00-\u9fff]+", "_", Path(upload.filename or "upload").stem)[:80]
     fd, path = tempfile.mkstemp(prefix=f"bjr_import_{safe_stem}_", suffix=suffix)
     try:
+        total_bytes = 0
         with os.fdopen(fd, "wb") as f:
             while chunk := upload.file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > settings.max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"上传文件超过 {settings.max_upload_bytes // (1024 * 1024)}MB 上限",
+                    )
                 f.write(chunk)
         return path
     except Exception:

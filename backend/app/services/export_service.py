@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import date
 from decimal import Decimal
 from typing import Any, Iterable
 
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from sqlalchemy import text
@@ -15,11 +17,16 @@ from .analysis_service import get_expiry_batches, get_inventory_analysis
 from .auth_service import record_activity
 from .dashboard_service import DashboardScope, _scope_clauses, _where, selected_sales_range
 from .permission_service import assert_can_view_department
+from ..core.config import settings
 from ..core.timezone import today_local
 
 
 class ExportError(ValueError):
     pass
+
+
+_DANGEROUS_EXCEL_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+_ILLEGAL_XML_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 # 各类导出的中文表头（顺序即列顺序）
@@ -61,19 +68,63 @@ def _to_float(value: Any) -> float | None:
     return float(value)
 
 
+def _safe_excel_cell(value: Any) -> tuple[Any, bool]:
+    """Return a cleaned value and whether Excel must treat it as text.
+
+    Numeric/date values retain their native types. External text is cleaned of
+    XML 1.0-illegal controls, and formula-like prefixes are explicitly marked
+    for string serialization by the row writer without deleting user content.
+    """
+    if not isinstance(value, str):
+        return value, False
+    cleaned = _ILLEGAL_XML_CHARS_RE.sub("", value)
+    return cleaned, cleaned.startswith(_DANGEROUS_EXCEL_PREFIXES)
+
+
+def _append_safe_row(ws, row: Iterable[Any], *, write_only: bool) -> None:
+    if write_only:
+        cells = []
+        for value in row:
+            cleaned, force_text = _safe_excel_cell(value)
+            cell = WriteOnlyCell(ws, value=cleaned)
+            if force_text:
+                cell.data_type = "s"
+                cell.quotePrefix = True
+            cells.append(cell)
+        ws.append(cells)
+        return
+
+    prepared = [_safe_excel_cell(value) for value in row]
+    ws.append([value for value, _force_text in prepared])
+    row_index = ws.max_row
+    for column_index, (_value, force_text) in enumerate(prepared, start=1):
+        cell = ws.cell(row=row_index, column=column_index)
+        if force_text:
+            cell.data_type = "s"
+            cell.quotePrefix = True
+
+
+def _ensure_export_row_limit(row_count: int) -> None:
+    if row_count > settings.max_export_rows:
+        raise ExportError(
+            f"当前结果超过最大导出行数 {settings.max_export_rows}，请缩小日期范围或增加筛选条件"
+        )
+
+
 def _make_workbook(headers: list[str], rows: list[list[Any]], date_cols: set[int], *, write_only: bool = False) -> bytes:
+    _ensure_export_row_limit(len(rows))
     if write_only:
         # 流式写入，适用于大数据量（如效期批次完整导出），降低内存占用。
         wb = Workbook(write_only=True)
         ws = wb.create_sheet("导出数据")
-        ws.append(headers)
+        _append_safe_row(ws, headers, write_only=True)
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
         for col_idx, _ in enumerate(headers, start=1):
             letter = get_column_letter(col_idx)
             ws.column_dimensions[letter].width = 12 if col_idx in date_cols else 18
         for row in rows:
-            ws.append(row)
+            _append_safe_row(ws, row, write_only=True)
         buffer = io.BytesIO()
         wb.save(buffer)
         return buffer.getvalue()
@@ -81,7 +132,7 @@ def _make_workbook(headers: list[str], rows: list[list[Any]], date_cols: set[int
     wb = Workbook()
     ws = wb.active
     ws.title = "导出数据"
-    ws.append(headers)
+    _append_safe_row(ws, headers, write_only=False)
     # 冻结首行、自动筛选
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
@@ -89,7 +140,7 @@ def _make_workbook(headers: list[str], rows: list[list[Any]], date_cols: set[int
     for cell in ws[1]:
         cell.font = Font(bold=True)
     for row in rows:
-        ws.append(row)
+        _append_safe_row(ws, row, write_only=False)
     # 列宽：按内容自适应（封顶 40），日期列固定 12
     for col_idx, _ in enumerate(headers, start=1):
         letter = get_column_letter(col_idx)
@@ -128,9 +179,10 @@ def _product_rows(db: Session, department_id: int) -> list[list[Any]]:
                 WHERE b.id=p.import_batch_id AND b.department_id=:department_id
             )
             ORDER BY p.merchant_code
+            LIMIT :row_limit
             """
         ),
-        {"department_id": department_id},
+        {"department_id": department_id, "row_limit": settings.max_export_rows + 1},
     ).all()
     return [list(r) for r in rows]
 
@@ -179,9 +231,10 @@ def _sales_rows(db: Session, department_id: int, scope: DashboardScope) -> list[
               AND sd.business_date BETWEEN :start_date AND :end_date
               {_where(filters)}
             ORDER BY sd.business_date, s.source_name, w.source_name, p.merchant_code
+            LIMIT :row_limit
             """
         ),
-        params,
+        {**params, "row_limit": settings.max_export_rows + 1},
     ).all()
     out: list[list[Any]] = []
     for r in rows:
@@ -215,9 +268,14 @@ def _inventory_rows(db: Session, department_id: int) -> list[list[Any]]:
             JOIN warehouses w ON w.id=ib.warehouse_id
             WHERE ib.department_id=:department_id AND ib.snapshot_date=:snapshot_date
             ORDER BY w.source_name, p.merchant_code
+            LIMIT :row_limit
             """
         ),
-        {"department_id": department_id, "snapshot_date": latest},
+        {
+            "department_id": department_id,
+            "snapshot_date": latest,
+            "row_limit": settings.max_export_rows + 1,
+        },
     ).all()
     out: list[list[Any]] = []
     for r in rows:
@@ -245,9 +303,14 @@ def _aging_rows(db: Session, department_id: int) -> list[list[Any]]:
             JOIN warehouses w ON w.id=ag.warehouse_id
             WHERE ag.department_id=:department_id AND ag.snapshot_date=:snapshot_date
             ORDER BY w.source_name, p.merchant_code
+            LIMIT :row_limit
             """
         ),
-        {"department_id": department_id, "snapshot_date": latest},
+        {
+            "department_id": department_id,
+            "snapshot_date": latest,
+            "row_limit": settings.max_export_rows + 1,
+        },
     ).all()
     out: list[list[Any]] = []
     for r in rows:
@@ -267,6 +330,7 @@ def _build_xlsx(
     write_only: bool = False,
     headers_override: list[str] | None = None,
 ) -> tuple[bytes, str, int, str]:
+    _ensure_export_row_limit(len(rows))
     if not rows:
         # 空结果：不生成无意义 Excel，也不写 data_export 审计记录。
         raise ExportError("当前筛选条件下暂无可导出数据")
@@ -398,6 +462,7 @@ def export_inventory_analysis(
     )
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     rows = result["rows"]
+    _ensure_export_row_limit(len(rows))
     warehouse_columns = result.get("meta", {}).get("warehouse_columns", [])
     headers = INVENTORY_ANALYSIS_HEADERS
     if detail_product_categories:
@@ -482,6 +547,7 @@ def export_expiry_batches(
         limit=None,  # 完整导出，不截断
     )
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
+    _ensure_export_row_limit(int(result.get("filtered_count", len(result["rows"]))))
     rows = result["rows"]
     data = [
         [

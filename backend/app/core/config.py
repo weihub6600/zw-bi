@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     remember_session_days: int = 7
     session_cookie_secure: bool = False
 
+    # Import/export resource boundaries. Values are configurable through the
+    # matching upper-case environment variables.
+    max_upload_bytes: int = 50 * 1024 * 1024
+    max_import_rows: int = 200_000
+    max_import_worksheets: int = 20
+    max_xlsx_uncompressed_bytes: int = 500 * 1024 * 1024
+    max_export_rows: int = 200_000
+
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
         env_file_encoding="utf-8",

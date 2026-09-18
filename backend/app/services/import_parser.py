@@ -4,6 +4,8 @@ import csv
 import hashlib
 import json
 import re
+import zipfile
+from codecs import getincrementaldecoder
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -11,6 +13,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from openpyxl import load_workbook
+
+from ..core.config import settings
 
 
 class ImportValidationError(ValueError):
@@ -114,6 +118,9 @@ SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+_ILLEGAL_XML_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
 def sha256_file(path: str | Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -150,16 +157,21 @@ def _clean_text(value: Any) -> str:
         return ""
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    return str(value).strip()
+    return _ILLEGAL_XML_CHARS_RE.sub("", str(value)).strip()
 
 
 def _to_decimal(value: Any, field_name: str) -> Decimal:
     if value is None or _clean_text(value) == "":
         raise ImportValidationError("INVALID_NUMBER", f"{field_name} 不能为空")
     try:
-        return Decimal(str(value).replace(",", "").strip())
+        dec = Decimal(str(value).replace(",", "").strip())
     except (InvalidOperation, ValueError):
         raise ImportValidationError("INVALID_NUMBER", f"{field_name} 不是有效数字：{value}")
+    # MySQL columns are DECIMAL(18, 4/6); reject non-finite or clearly
+    # unrepresentable values before they reach the database transaction.
+    if not dec.is_finite() or abs(dec) >= Decimal("1E+12"):
+        raise ImportValidationError("INVALID_NUMBER", f"{field_name} 超出允许的数字范围：{value}")
+    return dec
 
 
 def _to_int(value: Any, field_name: str) -> int:
@@ -187,7 +199,22 @@ def _to_date(value: Any, field_name: str) -> date:
 
 
 def _iter_xlsx(path: Path) -> tuple[list[Any], Iterable[tuple[int, list[Any]]]]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            uncompressed_bytes = sum(info.file_size for info in archive.infolist())
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ImportValidationError("INVALID_XLSX", "Excel 文件格式损坏或无法读取") from exc
+    if uncompressed_bytes > settings.max_xlsx_uncompressed_bytes:
+        limit_mb = settings.max_xlsx_uncompressed_bytes // (1024 * 1024)
+        raise ImportValidationError("XLSX_EXPANDED_TOO_LARGE", f"Excel 解压后数据超过 {limit_mb}MB 上限")
+
     wb = load_workbook(path, read_only=True, data_only=True)
+    if len(wb.worksheets) > settings.max_import_worksheets:
+        wb.close()
+        raise ImportValidationError(
+            "TOO_MANY_WORKSHEETS",
+            f"Excel 工作表数量超过 {settings.max_import_worksheets} 个上限",
+        )
     ws = wb.active
     # 部分旺店通导出的 xlsx 写错了 worksheet dimension（例如 A1:A9035），
     # 但实际有多列数据。read_only 模式下需要重置维度后再扫描。
@@ -210,27 +237,43 @@ def _iter_xlsx(path: Path) -> tuple[list[Any], Iterable[tuple[int, list[Any]]]]:
     return headers, iterator()
 
 
-def _decode_csv(path: Path) -> str:
-    raw = path.read_bytes()
-    for encoding in ("utf-8-sig", "gb18030", "utf-8"):
+def _csv_encoding(path: Path) -> str:
+    with path.open("rb") as source:
+        if source.read(3) == b"\xef\xbb\xbf":
+            return "utf-8-sig"
+    # Validate incrementally so encoding detection does not duplicate the
+    # entire upload in memory. UTF-8 is preferred; GB18030 stays compatible.
+    for encoding in ("utf-8", "gb18030"):
+        decoder = getincrementaldecoder(encoding)(errors="strict")
         try:
-            return raw.decode(encoding)
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    decoder.decode(chunk)
+                decoder.decode(b"", final=True)
+            return encoding
         except UnicodeDecodeError:
             continue
     raise ImportValidationError("CSV_ENCODING", "CSV 编码无法识别，请保存为 UTF-8 CSV")
 
 
 def _iter_csv(path: Path) -> tuple[list[Any], Iterable[tuple[int, list[Any]]]]:
-    text = _decode_csv(path)
-    reader = csv.reader(text.splitlines())
+    source = path.open("r", encoding=_csv_encoding(path), newline="")
+    reader = csv.reader(source)
     try:
         headers = next(reader)
     except StopIteration:
+        source.close()
         raise ImportValidationError("EMPTY_FILE", "CSV 文件为空")
+    except Exception:
+        source.close()
+        raise
 
     def iterator() -> Iterable[tuple[int, list[Any]]]:
-        for row_no, row in enumerate(reader, start=2):
-            yield row_no, row
+        try:
+            for row_no, row in enumerate(reader, start=2):
+                yield row_no, row
+        finally:
+            source.close()
 
     return list(headers), iterator()
 
@@ -284,7 +327,13 @@ def parse_import_file(
         )
 
     headers, rows_iter = _source_rows(file_path)
-    mapping = _header_map(headers, data_type)
+    try:
+        mapping = _header_map(headers, data_type)
+    except Exception:
+        close = getattr(rows_iter, "close", None)
+        if close:
+            close()
+        raise
     parsed = ParsedImport(data_type=data_type, source_file=file_path.name, business_date=business_date)
     parsed.header_mapping = {key: _clean_text(headers[idx]) for key, idx in mapping.items()}
     seen_names: dict[str, str] = {}
@@ -297,6 +346,14 @@ def parse_import_file(
             parsed.skipped_rows += 1
             continue
         parsed.source_row_count += 1
+        if parsed.source_row_count > settings.max_import_rows:
+            close = getattr(rows_iter, "close", None)
+            if close:
+                close()
+            raise ImportValidationError(
+                "TOO_MANY_ROWS",
+                f"导入数据超过 {settings.max_import_rows} 行上限，请拆分文件后重新导入",
+            )
         raw = {_clean_text(headers[i]) or f"COL_{i+1}": row[i] if i < len(row) else None for i in range(len(headers))}
         try:
             def val(key: str) -> Any:
