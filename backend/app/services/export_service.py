@@ -17,6 +17,7 @@ from .analysis_service import get_expiry_batches, get_inventory_analysis
 from .auth_service import record_activity
 from .dashboard_service import DashboardScope, _scope_clauses, _where, selected_sales_range
 from .permission_service import assert_can_view_department
+from .product_category_codec import parse_category_names, serialize_category_names
 from ..core.config import settings
 from ..core.timezone import today_local
 
@@ -163,7 +164,7 @@ def _product_rows(db: Session, department_id: int) -> list[list[Any]]:
     rows = db.execute(
         text(
             """
-            SELECT p.merchant_code, p.product_name, p.spec, p.brand, p.category, p.barcode
+            SELECT p.id, p.merchant_code, p.product_name, p.spec, p.brand, p.category, p.barcode
             FROM products p
             WHERE EXISTS (
                 SELECT 1 FROM sales_daily s WHERE s.department_id=:department_id AND s.product_id=p.id
@@ -184,7 +185,35 @@ def _product_rows(db: Session, department_id: int) -> list[list[Any]]:
         ),
         {"department_id": department_id, "row_limit": settings.max_export_rows + 1},
     ).all()
-    return [list(r) for r in rows]
+    product_ids = [int(row[0]) for row in rows]
+    relation_names: dict[int, list[str]] = {}
+    known_names: list[str] = []
+    try:
+        known_names = [str(value) for value in db.execute(text("SELECT category_name FROM product_categories")).scalars().all()]
+        if product_ids:
+            placeholders = ",".join(f":product_{i}" for i in range(len(product_ids)))
+            relation_rows = db.execute(
+                text(
+                    f"SELECT pcr.product_id, pc.category_name "
+                    f"FROM product_category_relations pcr JOIN product_categories pc ON pc.id=pcr.category_id "
+                    f"WHERE pcr.product_id IN ({placeholders}) ORDER BY pcr.product_id, pc.category_name"
+                ),
+                {f"product_{i}": value for i, value in enumerate(product_ids)},
+            ).all()
+            for product_id, category_name in relation_rows:
+                relation_names.setdefault(int(product_id), []).append(str(category_name))
+    except Exception:
+        # Older restored databases may not have the relation tables yet.
+        relation_names = {}
+
+    result: list[list[Any]] = []
+    for row in rows:
+        product_id, merchant_code, product_name, spec, brand, legacy_category, barcode = row
+        names = relation_names.get(int(product_id))
+        if names is None:
+            names = parse_category_names(legacy_category, known_names=known_names)
+        result.append([merchant_code, product_name, spec, brand, serialize_category_names(names), barcode])
+    return result
 
 
 def _get_latest_sales_date(db: Session, department_id: int) -> date | None:

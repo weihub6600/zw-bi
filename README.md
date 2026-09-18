@@ -3,7 +3,7 @@
 面向批发零售业务的库存与销售数据分析平台。系统每天接收并解析门店提供的库存 / 销售 Excel 与 CSV 文件，
 自动对商品进行**库存健康度评估**（缺货、滞销、临期、动销率、效期预警等），并提供部门级 / 店铺级多维分析看板。
 
-当前版本：**v15.4.0**（版本目录：`releases/v15.4.0`）
+当前版本：**v15.7.6**。仓库开发目录直接位于根目录；正式发布包才使用 `releases/<版本号>/` 布局。
 
 ## 功能特性
 
@@ -20,29 +20,21 @@
 | 层 | 技术 |
 | --- | --- |
 | 后端 | Python 3.10+ / FastAPI / SQLAlchemy / PyMySQL |
-| 数据库 | MySQL 5.7+ |
-| 前端 | Vue 3 编译产物（`frontend-dist`，静态资源由 FastAPI 托管） |
+| 数据库 | MySQL 8.0+（当前迁移使用 JSON_TABLE 等 MySQL 8 能力） |
+| 前端 | Vue 3 源码（`frontend/`）与编译产物（`frontend-dist/`） |
 | 部署 | 宝塔面板 / systemd，发布链 `releases/<version>/` + 符号链接 `current` |
 
 ## 目录结构
 
 ```
 zw-bi/
-├── README.md                 # 项目说明（本文件）
-├── LICENSE                   # MIT 许可证
-├── .github/workflows/ci.yml  # GitHub Actions 持续集成
-└── releases/
-    └── v15.4.0/              # 发布版本目录（可多个版本并存）
-        ├── backend/          # FastAPI 后端
-        │   ├── app/          # 应用代码（routes / services / core / cli）
-        │   ├── sql/          # schema_tables.sql 与增量迁移 migrations/
-        │   └── tests/        # 单元测试（unittest）
-        ├── frontend-dist/    # 前端编译产物
-        ├── deploy/baota/     # 宝塔部署脚本（update / service / rollback / check）
-        ├── scripts/          # release_tool.py 发布工具
-        ├── install.sh        # 首次安装脚本
-        ├── manifest.json     # 发布文件清单与哈希校验
-        └── VERSION           # 版本号
+├── backend/                  # FastAPI 后端、SQL、测试
+├── frontend/                 # Vue 3 前端源码
+├── frontend-dist/            # 可选的静态构建产物
+├── deploy/                   # 宝塔部署配置与脚本
+├── scripts/                  # 发布与数据库工具
+├── shared/                   # 本地运行数据（不提交）
+└── releases/                 # 正式发布时生成的版本归档
 ```
 
 ## 快速开始
@@ -51,7 +43,7 @@ zw-bi/
 
 ```bash
 # 1. 准备 Python 3.10+ 环境并安装依赖
-cd releases/v15.4.0/backend
+cd backend
 pip install -r requirements.txt
 
 # 2. 复制环境配置并填写数据库连接
@@ -62,27 +54,41 @@ py ../scripts/release_tool.py init-schema
 
 # 4. 启动开发服务器
 py -m uvicorn app.main:app --reload --port 8000
+
+# 5. 前端开发（另一个终端）
+cd ../frontend
+npm ci
+npm run dev
 ```
 
 ### 生产部署（宝塔面板）
 
-请参阅 `releases/v15.4.0/README_DEPLOY.txt` 与 `install.sh`。
+生产环境应使用 HTTPS，并设置 `SESSION_COOKIE_SECURE=true`、明确的 `CORS_ORIGINS`，
+以及仅包含实际反向代理地址的 `TRUSTED_PROXY_IPS`。本地 HTTP 开发保持
+`SESSION_COOKIE_SECURE=false`。部署与升级命令见 `deploy/baota/` 和 `scripts/release_tool.py`。
+
+登录失败限流在应用进程内按账号和可信客户端 IP 分别计数。若生产环境启用多个 Uvicorn
+worker 或多实例，还应在 Nginx/网关增加共享 `limit_req`；同时将 Uvicorn 的
+`forwarded-allow-ips` 与 `TRUSTED_PROXY_IPS` 配成同一组实际代理地址。
 
 ## 测试
 
 ```bash
-cd releases/v15.4.0/backend
-python -m unittest discover -s tests -p "test_*.py"
+python -m unittest discover -s backend/tests -p "test_*.py"
+
+# 前端构建
+npm run build --prefix frontend
 ```
 
-说明：个别测试需要前端源码目录（`frontend/src`）做前后端一致性检查，
-发布包中不含前端源码时会自动跳过，不影响其余测试结果。
+默认测试使用隔离 SQLite 内存库。真实 MySQL 测试必须使用独立 MySQL 8 数据库，
+设置 `RUN_MYSQL_INTEGRATION=1` 后单独运行 `backend.tests.test_mysql_integration`。
+CI 会启动一次性 MySQL 服务，不读取生产密钥，也不连接生产数据库。
 
 ## 版本发布
 
 - 每个正式版本以独立目录 `releases/v<版本号>/` 发布，附带 `manifest.json` 文件哈希清单。
 - `scripts/release_tool.py` 提供 `verify` / `init-schema` / `migrate` / `backup-db` / `restore-db` 等运维能力。
-- 服务器升级通过符号链接 `current` 切换到新版本目录，`deploy/baota/update.sh` 自动执行迁移与回滚。
+- 服务器升级通过符号链接 `current` 切换到新版本目录。迁移前必须备份数据库；切回旧应用版本并不自动回滚已执行的数据库迁移。
 
 ## 许可证
 

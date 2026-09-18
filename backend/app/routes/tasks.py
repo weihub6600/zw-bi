@@ -43,8 +43,8 @@ class CreateTaskBody(BaseModel):
     manager_note: str = Field(default="", max_length=20000)
     shop_name: str | None = Field(default=None, max_length=255)
     warehouse_name: str | None = Field(default=None, max_length=255)
-    shop_ids: list[int] | None = Field(default=None)
-    warehouse_ids: list[int] | None = Field(default=None)
+    shop_ids: list[int] | None = Field(default=None, max_length=100)
+    warehouse_ids: list[int] | None = Field(default=None, max_length=100)
 
 
 class OwnerNoteBody(BaseModel):

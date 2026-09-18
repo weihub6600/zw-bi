@@ -6,10 +6,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from .import_parser import ParsedImport, RowError, json_safe, parse_import_file, sha256_file
+from .product_category_codec import parse_category_names, serialize_category_names
 from .permission_service import assert_can_import, assert_can_view_department
 from ..core.timezone import now_local, today_local
 
@@ -100,13 +101,33 @@ def _record_change(db: Session, batch_id: int, table_name: str, row_pk: int, act
     )
 
 
+def _product_category_ids(db: Session, product_id: int) -> list[int]:
+    try:
+        rows = db.execute(
+            text(
+                "SELECT category_id FROM product_category_relations "
+                "WHERE product_id=:product_id ORDER BY category_id"
+            ),
+            {"product_id": product_id},
+        ).scalars().all()
+    except Exception:
+        return []
+    return [int(value) for value in rows]
+
+
 def _find_or_create_named_dimension(db: Session, table_name: str, name: str) -> int:
     if table_name not in {"shops", "warehouses"}:
         raise ValueError("invalid dimension")
+    cache = db.info.setdefault("import_dimension_ids", {})
+    cache_key = (table_name, name)
+    if cache_key in cache:
+        return int(cache[cache_key])
     row = db.execute(text(f"SELECT id FROM {table_name} WHERE source_name=:name ORDER BY id LIMIT 1"), {"name": name}).first()
     if row:
+        cache[cache_key] = int(row[0])
         return int(row[0])
     result = db.execute(text(f"INSERT INTO {table_name}(source_name) VALUES(:name)"), {"name": name})
+    cache[cache_key] = int(result.lastrowid)
     return int(result.lastrowid)
 
 def _sync_product_categories(
@@ -114,13 +135,12 @@ def _sync_product_categories(
     product_id: int,
     category_text: str | None,
 ):
-    names = list(dict.fromkeys(
-        x.strip()
-        for x in str(category_text or "")
-        .replace("，", ",")
-        .split(",")
-        if x.strip()
-    ))
+    category_ids = db.info.get("import_category_ids")
+    if category_ids is None:
+        rows = db.execute(text("SELECT id,category_name FROM product_categories")).all()
+        category_ids = {str(name): int(category_id) for category_id, name in rows}
+        db.info["import_category_ids"] = category_ids
+    names = parse_category_names(category_text, known_names=category_ids)
 
     # 商品资料是分类关系的唯一来源：重导时同步新增、删除和清空。
     db.execute(
@@ -129,26 +149,21 @@ def _sync_product_categories(
     )
 
     for name in names:
-        row = db.execute(
-            text("""
-                SELECT id
-                FROM product_categories
-                WHERE category_name=:name
-            """),
-            {"name": name},
-        ).first()
-
-        if row:
-            category_id = row[0]
-        else:
-            result = db.execute(
-                text("""
-                    INSERT INTO product_categories(category_name)
-                    VALUES(:name)
-                """),
+        category_id = category_ids.get(name)
+        if category_id is None:
+            # The unique category name is the concurrency boundary. INSERT
+            # IGNORE/OR IGNORE lets concurrent imports converge on one row;
+            # the follow-up SELECT retrieves the winner's ID.
+            insert_sql = "INSERT OR IGNORE" if db.get_bind().dialect.name == "sqlite" else "INSERT IGNORE"
+            db.execute(
+                text(f"{insert_sql} INTO product_categories(category_name) VALUES(:name)"),
                 {"name": name},
             )
-            category_id = result.lastrowid
+            category_id = db.execute(
+                text("SELECT id FROM product_categories WHERE category_name=:name"),
+                {"name": name},
+            ).scalar_one()
+            category_ids[name] = int(category_id)
 
         insert_ignore = "INSERT OR IGNORE" if db.get_bind().dialect.name == "sqlite" else "INSERT IGNORE"
         db.execute(
@@ -162,6 +177,7 @@ def _sync_product_categories(
                 "category_id": category_id,
             },
         )
+    return names
 def _touch_product_alias(
     db: Session,
     product_id: int,
@@ -299,17 +315,29 @@ def _prepare_latest_snapshot(
     return len(existing_rows)
 
 
-def _get_or_create_product(db: Session, batch_id: int, row: dict[str, Any], data_type: str, warnings: list[RowError]) -> int:
-    existing = db.execute(
-        text("SELECT * FROM products WHERE merchant_code=:code"),
-        {"code": row["merchant_code"]},
-    ).mappings().first()
+def _get_or_create_product(db: Session, batch_id: int, row: dict[str, Any], data_type: str, warnings: list[RowError], product_cache: dict[str, dict[str, Any]] | None = None) -> int:
+    code = str(row["merchant_code"])
+    existing = product_cache.get(code) if product_cache is not None else None
+    if existing is None:
+        fetched = db.execute(
+            text("SELECT * FROM products WHERE merchant_code=:code"),
+            {"code": code},
+        ).mappings().first()
+        existing = dict(fetched) if fetched else None
+        if existing is not None and product_cache is not None:
+            product_cache[code] = existing
     if existing:
         if data_type == "product":
+            before = {
+                **{k: existing[k] for k in ("product_name", "spec", "brand", "category", "barcode", "import_batch_id")},
+                "category_ids": _product_category_ids(db, int(existing["id"])),
+            }
+            category_names = _sync_product_categories(db, int(existing["id"]), row.get("category"))
             update_fields = {k: row.get(k) for k in ("product_name", "spec", "brand", "category", "barcode")}
-            changed = any(update_fields[k] != existing[k] for k in update_fields)
+            update_fields["category"] = serialize_category_names(category_names)
+            relation_changed = before["category_ids"] != _product_category_ids(db, int(existing["id"]))
+            changed = any(update_fields[k] != existing[k] for k in update_fields) or relation_changed
             if changed:
-                before = {k: existing[k] for k in ("product_name", "spec", "brand", "category", "barcode", "import_batch_id")}
                 _record_change(db, batch_id, "products", int(existing["id"]), "updated", before)
                 db.execute(
                     text(
@@ -321,8 +349,14 @@ def _get_or_create_product(db: Session, batch_id: int, row: dict[str, Any], data
                     ),
                     {**update_fields, "batch_id": batch_id, "id": existing["id"]},
                 )
-            _sync_product_categories(db, int(existing["id"]), row.get("category"))
-        return int(existing["id"])
+        product_id = int(existing["id"])
+        if product_cache is not None:
+            product_cache[code] = {
+                **existing,
+                **(update_fields if data_type == "product" else {}),
+                "import_batch_id": batch_id if data_type == "product" and changed else existing.get("import_batch_id"),
+            }
+        return product_id
 
     result = db.execute(
         text(
@@ -342,10 +376,38 @@ def _get_or_create_product(db: Session, batch_id: int, row: dict[str, Any], data
         },
     )
     product_id = int(result.lastrowid)
+    stored_category = row.get("category")
     if data_type == "product":
-        _sync_product_categories(db, product_id, row.get("category"))
+        category_names = _sync_product_categories(db, product_id, row.get("category"))
+        stored_category = serialize_category_names(category_names)
+        db.execute(
+            text("UPDATE products SET category=:category WHERE id=:product_id"),
+            {"category": stored_category, "product_id": product_id},
+        )
     _record_change(db, batch_id, "products", product_id, "inserted", None)
+    if product_cache is not None:
+        product_cache[code] = {
+            "id": product_id,
+            "merchant_code": code,
+            "product_name": row["product_name"],
+            "spec": row.get("spec"),
+            "brand": row.get("brand"),
+            "category": stored_category,
+            "barcode": row.get("barcode"),
+            "import_batch_id": batch_id,
+        }
     return product_id
+
+
+def _prefetch_products(db: Session, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    codes = list(dict.fromkeys(str(row["merchant_code"]) for row in rows if row.get("merchant_code")))
+    if not codes:
+        return {}
+    query = text("SELECT * FROM products WHERE merchant_code IN :codes").bindparams(bindparam("codes", expanding=True))
+    return {
+        str(row["merchant_code"]): dict(row)
+        for row in db.execute(query, {"codes": codes}).mappings().all()
+    }
 
 
 def _merge_weighted_price(old_qty: Any, old_price: Any, new_qty: Any, new_price: Any) -> Decimal | None:
@@ -642,36 +704,47 @@ def import_parsed(
     errors = list(parsed.errors)
     warnings = list(parsed.warnings)
     success_rows = 0
+    db.info.pop("import_dimension_ids", None)
+    db.info.pop("import_category_ids", None)
     # 系统级 schema 自检：核心依赖表缺失时立即终止，避免逐行产生重复系统错误。
     _ensure_schema_tables(db)
-    for row in parsed.rows:
-        try:
-            # 每一行使用 SAVEPOINT。某一行失败时只回滚该行，不污染整个导入批次。
-            with db.begin_nested():
-                product_id = _get_or_create_product(db, batch_id, row, parsed.data_type, warnings)
-                if parsed.data_type == "sales":
-                    _upsert_sales(db, batch_id, department["id"], product_id, row)
-                elif parsed.data_type == "inventory":
-                    _upsert_inventory(db, batch_id, department["id"], product_id, row)
-                elif parsed.data_type == "aging":
-                    _upsert_aging(db, batch_id, department["id"], product_id, row)
-            success_rows += 1
-        except ImportExecutionError as exc:
-            # 行级规则错误（日期/格式/商家识别等）：记录并允许继续处理其他行。
-            errors.append(RowError(row_no=row.get("row_no"), code="ROW_IMPORT_RULE_FAILED", message=str(exc), raw_data=row))
-        except SystemImportError:
-            # 系统级错误：立即终止整批导入，交由外层回滚。
-            raise
-        except Exception as exc:
-            if _is_system_level_error(exc):
-                # 数据库结构缺失/连接异常/schema 不一致：系统级错误，立即终止。
-                raise SystemImportError(
-                    f"数据库结构版本不完整，请联系管理员升级数据库。本次导入已终止。{exc}",
-                    error_code="DATABASE_SCHEMA_MISSING",
-                    detail=str(exc),
-                ) from exc
-            # 其他未知行级错误：记录并继续。
-            errors.append(RowError(row_no=row.get("row_no"), code="ROW_IMPORT_FAILED", message=str(exc), raw_data=row))
+    for offset in range(0, len(parsed.rows), 1000):
+        chunk = parsed.rows[offset:offset + 1000]
+        product_cache = _prefetch_products(db, chunk)
+        for row in chunk:
+            try:
+                # 每一行使用 SAVEPOINT。某一行失败时只回滚该行，不污染整个导入批次。
+                with db.begin_nested():
+                    product_id = _get_or_create_product(db, batch_id, row, parsed.data_type, warnings, product_cache)
+                    if parsed.data_type == "sales":
+                        _upsert_sales(db, batch_id, department["id"], product_id, row)
+                    elif parsed.data_type == "inventory":
+                        _upsert_inventory(db, batch_id, department["id"], product_id, row)
+                    elif parsed.data_type == "aging":
+                        _upsert_aging(db, batch_id, department["id"], product_id, row)
+                success_rows += 1
+            except ImportExecutionError as exc:
+                # SAVEPOINT 已回滚；清掉可能指向该行临时记录的缓存。
+                product_cache.pop(str(row.get("merchant_code") or ""), None)
+                db.info.pop("import_dimension_ids", None)
+                db.info.pop("import_category_ids", None)
+                errors.append(RowError(row_no=row.get("row_no"), code="ROW_IMPORT_RULE_FAILED", message=str(exc), raw_data=row))
+            except SystemImportError:
+                # 系统级错误：立即终止整批导入，交由外层回滚。
+                raise
+            except Exception as exc:
+                product_cache.pop(str(row.get("merchant_code") or ""), None)
+                db.info.pop("import_dimension_ids", None)
+                db.info.pop("import_category_ids", None)
+                if _is_system_level_error(exc):
+                    # 数据库结构缺失/连接异常/schema 不一致：系统级错误，立即终止。
+                    raise SystemImportError(
+                        f"数据库结构版本不完整，请联系管理员升级数据库。本次导入已终止。{exc}",
+                        error_code="DATABASE_SCHEMA_MISSING",
+                        detail=str(exc),
+                    ) from exc
+                # 其他未知行级错误：记录并继续。
+                errors.append(RowError(row_no=row.get("row_no"), code="ROW_IMPORT_FAILED", message=str(exc), raw_data=row))
 
     if parsed.data_type in {"inventory", "aging"} and errors:
         # 快照必须整批成功；否则由路由层 rollback 整个事务，保留旧快照。
@@ -760,7 +833,29 @@ def _restore_update(db: Session, table_name: str, row_pk: int, before: dict[str,
     payload["row_pk"] = row_pk
     db.execute(text(f"UPDATE {table_name} SET {assignments} WHERE id=:row_pk"), payload)
     if table_name == "products":
-        _sync_product_categories(db, row_pk, payload.get("category"))
+        db.execute(
+            text("DELETE FROM product_category_relations WHERE product_id=:product_id"),
+            {"product_id": row_pk},
+        )
+        category_ids = before.get("category_ids")
+        if category_ids is None:
+            _sync_product_categories(db, row_pk, payload.get("category"))
+        else:
+            insert_sql = "INSERT OR IGNORE" if db.get_bind().dialect.name == "sqlite" else "INSERT IGNORE"
+            for category_id in dict.fromkeys(int(value) for value in category_ids):
+                exists = db.execute(
+                    text("SELECT id FROM product_categories WHERE id=:category_id"),
+                    {"category_id": category_id},
+                ).scalar()
+                if exists is None:
+                    raise RollbackConflictError(f"回滚所需商品分类不存在：{category_id}")
+                db.execute(
+                    text(
+                        f"{insert_sql} INTO product_category_relations(product_id,category_id) "
+                        "VALUES(:product_id,:category_id)"
+                    ),
+                    {"product_id": row_pk, "category_id": category_id},
+                )
 
 
 def _restore_deleted(db: Session, table_name: str, before: dict[str, Any]) -> None:

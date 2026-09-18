@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from sqlalchemy import create_engine, text
@@ -44,10 +45,10 @@ class V158ProductCategoryAdminTests(unittest.TestCase):
             set_product_categories(db, self.actor, "B2C", [1], [1, 2])
             names = db.execute(text("SELECT category_name FROM product_categories pc JOIN product_category_relations pcr ON pcr.category_id=pc.id WHERE pcr.product_id=1 ORDER BY category_name")).scalars().all()
             self.assertEqual(names, sorted(["饮料", "零食"]))
-            self.assertEqual(db.execute(text("SELECT category FROM products WHERE id=1")).scalar_one().split("、"), sorted(["饮料", "零食"]))
+            self.assertEqual(json.loads(db.execute(text("SELECT category FROM products WHERE id=1")).scalar_one()), sorted(["饮料", "零食"]))
             set_product_categories(db, self.actor, "B2C", [1], [2])
             self.assertEqual(db.execute(text("SELECT COUNT(*) FROM product_category_relations WHERE product_id=1")).scalar_one(), 1)
-            self.assertEqual(db.execute(text("SELECT category FROM products WHERE id=1")).scalar_one(), "零食")
+            self.assertEqual(json.loads(db.execute(text("SELECT category FROM products WHERE id=1")).scalar_one()), ["零食"])
 
 
 if __name__ == "__main__":

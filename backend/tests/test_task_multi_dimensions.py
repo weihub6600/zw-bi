@@ -58,6 +58,12 @@ def _db():
 
 
 class DimensionPermissionTests(unittest.TestCase):
+    def test_dimension_count_is_bounded(self):
+        db = _db()
+        with self.assertRaisesRegex(ValueError, "最多选择 100"):
+            _validate_task_dimensions(db, 1, shop_ids=list(range(101)), warehouse_ids=[])
+        db.close()
+
     def test_valid_shops_warehouses_allowed(self):
         db = _db()
         shops, whs = _validate_task_dimensions(db, 1, shop_ids=[11, 12], warehouse_ids=[31, 32])

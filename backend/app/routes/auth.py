@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -9,7 +11,7 @@ from ..core.config import settings
 from ..db import get_db
 from ..services.auth_service import (
     AuthenticationError, all_enabled_departments, authenticate, create_session, heartbeat,
-    memberships_for_user, record_activity, revoke_session,
+    memberships_for_user, record_activity, revoke_session, LoginRateLimitError,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -22,8 +24,32 @@ class LoginBody(BaseModel):
 
 
 def _client(request: Request) -> tuple[str | None, str | None]:
-    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    ip = forwarded or (request.client.host if request.client else None)
+    peer = request.client.host if request.client else None
+    ip = peer
+    trusted = []
+    for value in settings.trusted_proxy_ips.split(","):
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            trusted.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            continue
+    if peer:
+        try:
+            peer_ip = ipaddress.ip_address(peer)
+        except ValueError:
+            peer_ip = None
+        if peer_ip and any(peer_ip in network for network in trusted):
+            forwarded = [x.strip() for x in request.headers.get("x-forwarded-for", "").split(",") if x.strip()]
+            for candidate in reversed(forwarded):
+                try:
+                    candidate_ip = ipaddress.ip_address(candidate)
+                except ValueError:
+                    continue
+                if not any(candidate_ip in network for network in trusted):
+                    ip = candidate
+                    break
     return ip, request.headers.get("user-agent")
 
 
@@ -55,8 +81,10 @@ def login(body: LoginBody, request: Request, response: Response, db: Session = D
     ip, ua = _client(request)
     try:
         user = authenticate(db, body.login_key, body.password, ip_address=ip, user_agent=ua)
-    except AuthenticationError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+    except LoginRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": str(exc.retry_after)})
+    except AuthenticationError:
+        raise HTTPException(status_code=401, detail="账号或密码错误")
     raw, expires_at = create_session(
         db, int(user["id"]), remember=body.remember,
         session_hours=settings.session_hours, remember_days=settings.remember_session_days,

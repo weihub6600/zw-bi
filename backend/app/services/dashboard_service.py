@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from .expiry_service import ExpiryThreshold, is_long_term_expiry, remaining_days, remaining_percent
 from .inventory_service import predicted_daily_sales, predicted_stockout_days, shortage_risk_level
 from .permission_service import assert_can_view_department
+from ..core.sql import like_contains
 
 
 VALID_DAYS = {1, 7, 14, 30}
@@ -213,12 +214,12 @@ def _scope_clauses(
         parts = []
         for i, keyword in enumerate(search_keywords):
             key = f"product_search_{i}"
-            params[key] = f"%{keyword}%"
+            params[key] = like_contains(keyword)
             parts.append(
-                f"(LOWER({product_alias}.product_name) LIKE :{key} "
-                f"OR LOWER({product_alias}.merchant_code) LIKE :{key} "
-                f"OR LOWER(COALESCE({product_alias}.spec,'')) LIKE :{key} "
-                f"OR LOWER(COALESCE({product_alias}.brand,'')) LIKE :{key})"
+                f"(LOWER({product_alias}.product_name) LIKE :{key} ESCAPE '!' "
+                f"OR LOWER({product_alias}.merchant_code) LIKE :{key} ESCAPE '!' "
+                f"OR LOWER(COALESCE({product_alias}.spec,'')) LIKE :{key} ESCAPE '!' "
+                f"OR LOWER(COALESCE({product_alias}.brand,'')) LIKE :{key} ESCAPE '!')"
             )
         clauses.append("(" + " AND ".join(parts) + ")")
 
@@ -252,8 +253,8 @@ def _scope_clauses(
         parts = []
         for i, keyword in enumerate(includes):
             key = f"inc_{i}"
-            params[key] = f"%{keyword}%"
-            parts.append(f"LOWER({product_alias}.product_name) LIKE :{key}")
+            params[key] = like_contains(keyword)
+            parts.append(f"LOWER({product_alias}.product_name) LIKE :{key} ESCAPE '!'")
         clauses.append("(" + " OR ".join(parts) + ")")
 
     excludes = [x.lower() for x in parse_keywords(scope.exclude_name)]
@@ -261,8 +262,8 @@ def _scope_clauses(
         parts = []
         for i, keyword in enumerate(excludes):
             key = f"exc_{i}"
-            params[key] = f"%{keyword}%"
-            parts.append(f"LOWER({product_alias}.product_name) LIKE :{key}")
+            params[key] = like_contains(keyword)
+            parts.append(f"LOWER({product_alias}.product_name) LIKE :{key} ESCAPE '!'")
         clauses.append("NOT (" + " OR ".join(parts) + ")")
 
     if shop_alias and scope.shops:

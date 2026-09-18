@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .core.config import settings
+from .core.config import settings, validate_runtime_security
 from .version import APP_VERSION
 from .routes.health import router as health_router
 from .routes.business_rules import router as rules_router
@@ -14,6 +14,7 @@ from .routes.admin import router as admin_router
 from .routes.setup import router as setup_router
 from .routes.exports import router as exports_router
 
+validate_runtime_security()
 app = FastAPI(title="百嘉瑞 BI", version=APP_VERSION)
 
 app.add_middleware(

@@ -9,8 +9,12 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.orm import Session
 
 from .auth_service import record_activity
+from ..core.sql import like_contains
 from .permission_service import PermissionDenied, assert_can_view_department, get_actor, get_department
 from .task_service import completion_percent, task_start_date
+
+
+MAX_TASK_DIMENSIONS = 100
 
 
 def _number(value: Any) -> float:
@@ -146,6 +150,8 @@ def _validate_task_dimensions(
     warehouse_ids: list[int],
 ) -> tuple[list[int], list[int]]:
     """校验 shop_ids / warehouse_ids 均在当前部门权限范围内，返回去重后的合法 id 列表。"""
+    if len(shop_ids) > MAX_TASK_DIMENSIONS or len(warehouse_ids) > MAX_TASK_DIMENSIONS:
+        raise ValueError(f"单个任务最多选择 {MAX_TASK_DIMENSIONS} 个店铺和 {MAX_TASK_DIMENSIONS} 个仓库")
     valid_shops = _dimension_ids_in_department(db, department_id, "shops", shop_ids)
     valid_whs = _dimension_ids_in_department(db, department_id, "warehouses", warehouse_ids)
     unknown = [int(i) for i in shop_ids if int(i) not in valid_shops]
@@ -621,10 +627,10 @@ def list_tasks(
         parts = []
         for i, keyword in enumerate(search_keywords):
             key = f"product_search_{i}"
-            params[key] = f"%{keyword}%"
+            params[key] = like_contains(keyword)
             parts.append(
-                f"(LOWER(p.product_name) LIKE :{key} OR LOWER(p.merchant_code) LIKE :{key} "
-                f"OR LOWER(COALESCE(p.spec,'')) LIKE :{key} OR LOWER(COALESCE(p.brand,'')) LIKE :{key})"
+                f"(LOWER(p.product_name) LIKE :{key} ESCAPE '!' OR LOWER(p.merchant_code) LIKE :{key} ESCAPE '!' "
+                f"OR LOWER(COALESCE(p.spec,'')) LIKE :{key} ESCAPE '!' OR LOWER(COALESCE(p.brand,'')) LIKE :{key} ESCAPE '!')"
             )
         clauses.append("(" + " AND ".join(parts) + ")")
     where_sql = (" AND " + " AND ".join(clauses)) if clauses else ""

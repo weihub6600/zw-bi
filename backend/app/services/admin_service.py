@@ -7,7 +7,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.timezone import now_local
-from .auth_service import hash_password, record_activity
+from ..core.sql import like_contains
+from .auth_service import hash_password, record_activity, revoke_user_sessions
+from .product_category_codec import serialize_category_names
 from .permission_service import PermissionDenied, get_department
 
 
@@ -54,7 +56,8 @@ def list_users(db: Session, actor: dict, department_code: str, *, search: str = 
     department = assert_can_admin_department(db, actor, department_code)
     params = {"did": department["id"], "search": f"%{search.strip()}%"}
     where = ["ud.department_id=:did"]
-    if search.strip(): where.append("(u.user_id LIKE :search OR u.username LIKE :search)")
+    if search.strip(): where.append("(u.user_id LIKE :search ESCAPE '!' OR u.username LIKE :search ESCAPE '!')")
+    params["search"] = like_contains(search.strip())
     if role: where.append("ud.role=:role"); params["role"] = role
     if membership_status: where.append("ud.status=:mstatus"); params["mstatus"] = membership_status
     rows = db.execute(text(f"""
@@ -135,6 +138,8 @@ def update_user(db: Session, actor: dict, department_code: str, user_id: str, *,
         sets.append("status=:status");params["status"]=account_status
     try:
         if sets: db.execute(text("UPDATE users SET "+",".join(sets)+" WHERE id=:pk"),params)
+        if password:
+            revoke_user_sessions(db, int(target["id"]))
         msets=[];mparams={"u":target["id"],"d":department["id"]}
         if membership_status is not None:
             if membership_status not in {"enabled","disabled"}: raise ValueError("成员状态无效")
@@ -254,8 +259,8 @@ def list_product_category_admin(db: Session, actor: dict, department_code: str, 
     scope_sql, params = _product_visibility_sql(actor, int(department["id"]))
     where = [scope_sql]
     for i, keyword in enumerate(x.strip().lower() for x in re.split(r"\s+", search or "") if x.strip()):
-        key = f"product_search_{i}"; params[key] = f"%{keyword}%"
-        where.append(f"(LOWER(p.merchant_code) LIKE :{key} OR LOWER(p.product_name) LIKE :{key} OR LOWER(COALESCE(p.spec,'')) LIKE :{key} OR LOWER(COALESCE(p.brand,'')) LIKE :{key})")
+        key = f"product_search_{i}"; params[key] = like_contains(keyword)
+        where.append(f"(LOWER(p.merchant_code) LIKE :{key} ESCAPE '!' OR LOWER(p.product_name) LIKE :{key} ESCAPE '!' OR LOWER(COALESCE(p.spec,'')) LIKE :{key} ESCAPE '!' OR LOWER(COALESCE(p.brand,'')) LIKE :{key} ESCAPE '!')")
     if category_id is not None:
         params["category_id"] = int(category_id)
         where.append("EXISTS (SELECT 1 FROM product_category_relations fcr WHERE fcr.product_id=p.id AND fcr.category_id=:category_id)")
@@ -337,6 +342,9 @@ def set_product_categories(db: Session, actor: dict, department_code: str, produ
         for category_id in category_ids:
             db.execute(text(f"{insert_sql} INTO product_category_relations(product_id,category_id) VALUES(:product_id,:category_id)"), {"product_id": product_id, "category_id": category_id})
         names = db.execute(text("SELECT pc.category_name FROM product_categories pc JOIN product_category_relations pcr ON pcr.category_id=pc.id WHERE pcr.product_id=:product_id ORDER BY pc.category_name"), {"product_id": product_id}).scalars().all()
-        db.execute(text("UPDATE products SET category=:category WHERE id=:product_id"), {"category": "、".join(str(x) for x in names) or None, "product_id": product_id})
+        db.execute(
+            text("UPDATE products SET category=:category WHERE id=:product_id"),
+            {"category": serialize_category_names(names), "product_id": product_id},
+        )
     record_activity(db, int(actor["user_pk"]), "product_category_assign", department_id=int(department["id"]), detail={"product_ids": product_ids, "category_ids": category_ids})
     return {"ok": True, "product_ids": product_ids, "category_ids": category_ids}

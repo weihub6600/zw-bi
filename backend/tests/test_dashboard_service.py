@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import unittest
 
-from app.services.dashboard_service import build_rankings, parse_keywords
+from app.services.dashboard_service import DashboardScope, _scope_clauses, build_rankings, parse_keywords
+from app.core.sql import like_contains, like_prefix
 
 
 class DashboardServiceTests(unittest.TestCase):
+    def test_like_metacharacters_are_treated_as_literal_text(self):
+        self.assertEqual(like_contains("50%_off"), "%50!%!_off%")
+        self.assertEqual(like_prefix("A_1%"), "A!_1!%%")
+        params = {}
+        clauses = _scope_clauses(DashboardScope(actor_user_id="U1", product_search="50%_off"), params)
+        self.assertEqual(params["product_search_0"], "%50!%!_off%")
+        self.assertIn("ESCAPE", clauses[0])
+
     def test_parse_keywords_supports_chinese_comma_and_spaces(self):
         self.assertEqual(parse_keywords("泡菜，海苔 赠品"), ["泡菜", "海苔", "赠品"])
 

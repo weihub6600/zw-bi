@@ -40,11 +40,18 @@ class Settings(BaseSettings):
     mysql_password: str = "change_me"
 
     app_secret: str = "dev-secret"
+    app_environment: str = "development"
     cors_origins: str = ""
     session_cookie_name: str = "bjr_session"
     session_hours: int = 12
     remember_session_days: int = 7
     session_cookie_secure: bool = False
+    # Forwarded headers are trusted only when the immediate peer is allow-listed.
+    trusted_proxy_ips: str = ""
+    login_rate_limit_attempts: int = 5
+    login_rate_limit_ip_attempts: int = 20
+    login_rate_limit_window_seconds: int = 900
+    login_rate_limit_lockout_seconds: int = 900
 
     # Import/export resource boundaries. Values are configurable through the
     # matching upper-case environment variables.
@@ -53,6 +60,9 @@ class Settings(BaseSettings):
     max_import_worksheets: int = 20
     max_xlsx_uncompressed_bytes: int = 500 * 1024 * 1024
     max_export_rows: int = 200_000
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_recycle: int = 1800
 
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
@@ -76,3 +86,14 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def validate_runtime_security() -> None:
+    """Reject explicitly production-mode deployments with unsafe cookie/CORS settings."""
+    if settings.app_environment.strip().lower() != "production":
+        return
+    if not settings.session_cookie_secure:
+        raise RuntimeError("生产环境必须设置 SESSION_COOKIE_SECURE=true 并通过 HTTPS 访问")
+    origins = [value.strip() for value in settings.cors_origins.split(",") if value.strip()]
+    if "*" in origins or any(not origin.lower().startswith("https://") for origin in origins):
+        raise RuntimeError("生产环境 CORS_ORIGINS 只能配置明确的 HTTPS 来源，不能使用通配符")

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
-import json
-import re
 from typing import Any
 
 from sqlalchemy import text
@@ -30,7 +28,9 @@ from .dashboard_service import (
 from .expiry_service import is_long_term_expiry, total_shelf_days
 from .permission_service import assert_can_view_department
 from .auth_service import record_activity
+from .product_category_codec import display_category_names, parse_category_names
 from ..core.timezone import today_local
+from ..core.sql import like_contains, like_prefix
 
 
 # 这两个阈值目前作为可配置默认值使用，不作为不可变业务规则锁死。
@@ -53,22 +53,10 @@ def _product_category_names_by_product(db: Session, product_ids: list[int]) -> d
     placeholders = ",".join(f":product_category_product_{i}" for i in range(len(product_ids)))
     params = {f"product_category_product_{i}": product_id for i, product_id in enumerate(product_ids)}
 
-    def split_names(value: Any) -> list[str]:
-        if value is None:
-            return []
-        raw = str(value).strip()
-        if not raw:
-            return []
-        raw = raw.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "\r")
-        # Some historical imports stored a JSON array in the category column.
-        if raw.startswith("[") and raw.endswith("]"):
-            try:
-                decoded = json.loads(raw)
-                if isinstance(decoded, list):
-                    return [str(item).strip() for item in decoded if str(item).strip()]
-            except (TypeError, ValueError):
-                pass
-        return [part.strip() for part in re.split(r"[,，、;；|\r\n]+", raw) if part.strip()]
+    try:
+        known_names = db.execute(text("SELECT category_name FROM product_categories")).scalars().all()
+    except SQLAlchemyError:
+        known_names = []
 
     # Always load the legacy column first. This keeps categories visible even
     # when the relation tables are empty after a database restore.
@@ -77,7 +65,9 @@ def _product_category_names_by_product(db: Session, product_ids: list[int]) -> d
         params,
     ).mappings().all()
     result: dict[int, str] = {
-        int(row["product_id"]): "、".join(dict.fromkeys(split_names(row["category"])))
+        int(row["product_id"]): display_category_names(
+            parse_category_names(row["category"], known_names=known_names)
+        )
         for row in product_rows
     }
 
@@ -105,7 +95,7 @@ def _product_category_names_by_product(db: Session, product_ids: list[int]) -> d
         if name:
             relation_names.setdefault(int(row["product_id"]), []).append(name)
     for product_id, names in relation_names.items():
-        result[product_id] = "、".join(dict.fromkeys(names))
+        result[product_id] = display_category_names(names)
 
     return {product_id: result.get(product_id, "") for product_id in product_ids}
 
@@ -519,16 +509,16 @@ def search_products(
     params: dict[str, Any] = {
         "department_id": department_id,
         "exact": q.lower(),
-        "prefix": f"{q.lower()}%",
+        "prefix": like_prefix(q.lower()),
         "query_empty": 1 if not q else 0,
         "category_id": category_id,
     }
     for i, keyword in enumerate(keywords):
         key = f"search_{i}"
-        params[key] = f"%{keyword}%"
+        params[key] = like_contains(keyword)
         search_clauses.append(
-            f"(LOWER(p.merchant_code) LIKE :{key} OR LOWER(p.product_name) LIKE :{key} "
-            f"OR LOWER(COALESCE(p.spec,'')) LIKE :{key} OR LOWER(COALESCE(p.brand,'')) LIKE :{key})"
+            f"(LOWER(p.merchant_code) LIKE :{key} ESCAPE '!' OR LOWER(p.product_name) LIKE :{key} ESCAPE '!' "
+            f"OR LOWER(COALESCE(p.spec,'')) LIKE :{key} ESCAPE '!' OR LOWER(COALESCE(p.brand,'')) LIKE :{key} ESCAPE '!')"
         )
     search_sql = " AND ".join(search_clauses) if search_clauses else "1=1"
     rows = db.execute(
@@ -538,8 +528,8 @@ def search_products(
                    MAX(CASE
                      WHEN LOWER(p.merchant_code)=:exact THEN 100
                      WHEN LOWER(p.product_name)=:exact THEN 90
-                     WHEN LOWER(p.merchant_code) LIKE :prefix THEN 80
-                     WHEN LOWER(p.product_name) LIKE :prefix THEN 70
+                     WHEN LOWER(p.merchant_code) LIKE :prefix ESCAPE '!' THEN 80
+                     WHEN LOWER(p.product_name) LIKE :prefix ESCAPE '!' THEN 70
                      ELSE 50 END) AS score
             FROM products p
             WHERE (

@@ -71,6 +71,24 @@ class SchemaCheckTests(unittest.TestCase):
 
 
 class ProductCreateTests(unittest.TestCase):
+    def test_product_cache_avoids_repeated_lookup_within_chunk(self):
+        engine = _make_engine(include_aliases=True)
+        selects = []
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+            if "FROM products WHERE merchant_code" in statement:
+                selects.append(statement)
+
+        with Session(engine) as db:
+            warnings = []
+            cache = {}
+            row = {"merchant_code": "A001", "product_name": "商品A"}
+            pid1 = _get_or_create_product(db, 1, row, "sales", warnings, cache)
+            pid2 = _get_or_create_product(db, 1, row, "sales", warnings, cache)
+            self.assertEqual(pid1, pid2)
+            self.assertEqual(len(selects), 1)
+
     def test_same_merchant_multiple_rows_do_not_repeat_create(self):
         engine = _make_engine(include_aliases=True)
         with Session(engine) as db:
