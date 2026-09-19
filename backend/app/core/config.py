@@ -41,6 +41,7 @@ class Settings(BaseSettings):
 
     app_secret: str = "dev-secret"
     app_environment: str = "development"
+    setup_init_token: str = ""
     cors_origins: str = ""
     session_cookie_name: str = "bjr_session"
     session_hours: int = 12
@@ -94,6 +95,12 @@ def validate_runtime_security() -> None:
         return
     if not settings.session_cookie_secure:
         raise RuntimeError("生产环境必须设置 SESSION_COOKIE_SECURE=true 并通过 HTTPS 访问")
+    if settings.app_secret.strip() in {"", "dev-secret", "change_me"} or len(settings.app_secret.strip()) < 32:
+        raise RuntimeError("生产环境必须设置至少 32 个字符的非默认 APP_SECRET")
     origins = [value.strip() for value in settings.cors_origins.split(",") if value.strip()]
-    if "*" in origins or any(not origin.lower().startswith("https://") for origin in origins):
+    if not origins or "*" in origins or any(not origin.lower().startswith("https://") for origin in origins):
         raise RuntimeError("生产环境 CORS_ORIGINS 只能配置明确的 HTTPS 来源，不能使用通配符")
+    if not settings.trusted_proxy_ips.strip():
+        raise RuntimeError("生产环境必须明确设置 TRUSTED_PROXY_IPS")
+    if len(settings.setup_init_token.strip()) < 16:
+        raise RuntimeError("生产环境必须设置至少 16 个字符的 SETUP_INIT_TOKEN")

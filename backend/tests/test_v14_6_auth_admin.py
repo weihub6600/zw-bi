@@ -11,7 +11,7 @@ from app.services.auth_service import (
     AuthenticationError, LoginRateLimitError, authenticate, create_session,
     hash_password, login_failure_limiter, resolve_session, token_hash, verify_password,
 )
-from app.services.admin_service import create_user, update_user
+from app.services.admin_service import activity_summary, create_user, update_user, user_detail
 from app.services.permission_service import PermissionDenied
 
 
@@ -23,6 +23,7 @@ def _admin_schema_engine():
         conn.execute(text("CREATE TABLE users(id INTEGER PRIMARY KEY,user_id TEXT UNIQUE,username TEXT UNIQUE,password_hash TEXT,is_system_admin INTEGER,status TEXT,last_login_time DATETIME,last_active_time DATETIME,login_count INTEGER DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"))
         conn.execute(text("CREATE TABLE user_departments(id INTEGER PRIMARY KEY,user_pk INTEGER,department_id INTEGER,role TEXT,status TEXT)"))
         conn.execute(text("CREATE TABLE activity_logs(id INTEGER PRIMARY KEY,user_pk INTEGER,department_id INTEGER,action_type TEXT,action_detail TEXT,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"))
+        conn.execute(text("CREATE TABLE todo_tasks(id INTEGER PRIMARY KEY,owner_user_pk INTEGER,department_id INTEGER,status TEXT)"))
         conn.execute(text("CREATE TABLE auth_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,user_pk INTEGER,session_token_hash TEXT UNIQUE,expires_at DATETIME,last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,ip_address TEXT,user_agent TEXT,created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"))
         conn.execute(text("INSERT INTO departments(id,code,name,status) VALUES(1,'B2C','B2C事业部','enabled')"))
         # 部门管理员（非系统管理员）
@@ -197,5 +198,33 @@ class V146AuthAdminTests(unittest.TestCase):
         self.assertIn("部门管理员只能管理本部门普通用户",source)
         self.assertIn("部门管理员不能授予部门管理员权限",source)
         self.assertIn("用户名/密码属于全局身份",source)
+
+    def test_department_admin_activity_is_scoped_for_multi_department_user(self):
+        engine = _admin_schema_engine()
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO departments(id,code,name,status) VALUES(2,'B2B','B2B事业部','enabled')"))
+            conn.execute(text("INSERT INTO users(id,user_id,username,password_hash,is_system_admin,status) VALUES(20,'MULTI','多部门用户','x',0,'enabled')"))
+            conn.execute(text("INSERT INTO user_departments(user_pk,department_id,role,status) VALUES(20,1,'member','enabled'),(20,2,'member','enabled')"))
+            conn.execute(text("INSERT INTO activity_logs(user_pk,department_id,action_type,action_detail) VALUES(20,1,'b2c_action','b2c'),(20,2,'b2b_action','b2b'),(20,NULL,'global_action','global')"))
+        actor = {"user_pk": 10, "user_id": "DEPADMIN", "username": "dept_admin", "is_system_admin": False, "status": "enabled"}
+        with Session(engine) as db:
+            detail = user_detail(db, actor, "B2C", "MULTI")
+            self.assertEqual([row["action_type"] for row in detail["recent_activity"]], ["b2c_action"])
+            summary = activity_summary(db, actor, "B2C")
+            item = next(row for row in summary["items"] if row["user_id"] == "MULTI")
+            self.assertEqual(item["today_ops"], 1)
+            self.assertEqual(item["week_ops"], 1)
+
+    def test_system_admin_activity_can_see_all_departments(self):
+        engine = _admin_schema_engine()
+        with engine.begin() as conn:
+            conn.execute(text("INSERT INTO departments(id,code,name,status) VALUES(2,'B2B','B2B事业部','enabled')"))
+            conn.execute(text("INSERT INTO users(id,user_id,username,password_hash,is_system_admin,status) VALUES(20,'MULTI','多部门用户','x',0,'enabled')"))
+            conn.execute(text("INSERT INTO user_departments(user_pk,department_id,role,status) VALUES(20,1,'member','enabled'),(20,2,'member','enabled')"))
+            conn.execute(text("INSERT INTO activity_logs(user_pk,department_id,action_type,action_detail) VALUES(20,1,'b2c_action','b2c'),(20,2,'b2b_action','b2b'),(20,NULL,'global_action','global')"))
+        actor = {"user_pk": 1, "user_id": "SYS", "username": "system", "is_system_admin": True, "status": "enabled"}
+        with Session(engine) as db:
+            detail = user_detail(db, actor, "B2C", "MULTI")
+            self.assertEqual({row["action_type"] for row in detail["recent_activity"]}, {"b2c_action", "b2b_action", "global_action"})
 
 if __name__ == "__main__": unittest.main()

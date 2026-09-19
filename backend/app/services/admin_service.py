@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -92,9 +93,15 @@ def user_detail(db: Session, actor: dict, department_code: str, user_id: str) ->
         """),{"u":target["id"]}).mappings().all()
     else:
         memberships=[{"code":department["code"],"name":department["name"],**membership}] if membership else []
-    logs=db.execute(text("""
-      SELECT action_type,action_detail,created_at FROM activity_logs WHERE user_pk=:u ORDER BY id DESC LIMIT 30
-    """),{"u":target["id"]}).mappings().all()
+    log_where = "user_pk=:u"
+    log_params = {"u": target["id"]}
+    if not actor["is_system_admin"]:
+        # Department admins must not see global/other-department activity.
+        log_where += " AND department_id=:did"
+        log_params["did"] = department["id"]
+    logs=db.execute(text(f"""
+      SELECT action_type,action_detail,created_at FROM activity_logs WHERE {log_where} ORDER BY id DESC LIMIT 30
+    """),log_params).mappings().all()
     return {"user":target,"memberships":[dict(x) for x in memberships],"recent_activity":[dict(x) for x in logs]}
 
 
@@ -156,16 +163,20 @@ def update_user(db: Session, actor: dict, department_code: str, user_id: str, *,
 
 def activity_summary(db: Session, actor: dict, department_code: str) -> dict:
     department=assert_can_admin_department(db,actor,department_code)
-    rows=db.execute(text("""
+    now=now_local()
+    today_start=now.replace(hour=0,minute=0,second=0,microsecond=0)
+    week_start=today_start-timedelta(days=7)
+    activity_filter = "1=1" if actor["is_system_admin"] else "al.department_id=:did"
+    rows=db.execute(text(f"""
       SELECT u.user_id,u.username,u.last_login_time,u.last_active_time,u.login_count,ud.role,
-        (SELECT COUNT(*) FROM activity_logs al WHERE al.user_pk=u.id AND al.created_at>=CURRENT_DATE) today_ops,
-        (SELECT COUNT(*) FROM activity_logs al WHERE al.user_pk=u.id AND al.created_at>=DATE_SUB(CURRENT_DATE,INTERVAL 7 DAY)) week_ops,
+        (SELECT COUNT(*) FROM activity_logs al WHERE al.user_pk=u.id AND {activity_filter} AND al.created_at>=:today_start) today_ops,
+        (SELECT COUNT(*) FROM activity_logs al WHERE al.user_pk=u.id AND {activity_filter} AND al.created_at>=:week_start) week_ops,
         (SELECT COUNT(*) FROM todo_tasks t WHERE t.owner_user_pk=u.id AND t.department_id=:did AND t.status IN ('running','pending_delete','delete_rejected')) incomplete_tasks
       FROM users u JOIN user_departments ud ON ud.user_pk=u.id
       WHERE ud.department_id=:did AND ud.status='enabled'
       ORDER BY u.username
-    """),{"did":department["id"]}).mappings().all()
-    now=now_local();items=[]
+    """),{"did":department["id"],"today_start":today_start,"week_start":week_start}).mappings().all()
+    items=[]
     for r in rows:
         x=dict(r); la=x.get("last_active_time"); ll=x.get("last_login_time")
         mins=(now-la).total_seconds()/60 if la else 10**9

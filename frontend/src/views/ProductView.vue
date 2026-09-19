@@ -131,6 +131,7 @@ async function load(preserveData=false){
   finally{if(id===serial)loading.value=false}
 }
 async function saveNote(){if(!sku.value)return;noteState.value='保存中…';try{await saveProductNote(sku.value,note.value);noteState.value='已保存'}catch(e){noteState.value=`保存失败：${e.message}`}}
+function escapeTooltipText(value){return String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function renderCharts(){
   if(chartEl.value){
     if(!chart)chart=echarts.init(chartEl.value)
@@ -142,7 +143,7 @@ function renderCharts(){
   if(shopChartEl.value){
     if(!shopChart)shopChart=echarts.init(shopChartEl.value)
     const rows=[...(data.value?.shop_sales||[])].sort((a,b)=>Number(b.sales30||0)-Number(a.sales30||0)).slice(0,12).reverse()
-    shopChart.setOption({tooltip:{trigger:'axis',axisPointer:{type:'shadow'},backgroundColor:'rgba(20,28,50,.94)',borderWidth:0,textStyle:{color:'#fff'},formatter(ps){const i=ps?.[0]?.dataIndex||0,row=rows[i]||{};const yesterday=showYesterdaySales.value?`<br>昨日：${n(row.sales_yesterday)}`:'';return `${row.shop||''}${yesterday}<br>7天：${n(row.sales7)}<br>14天：${n(row.sales14)}<br>30天：${n(row.sales30)}<br>30天占比：${n(row.share30_pct,1)}%`}},grid:{left:138,right:36,top:12,bottom:46,containLabel:true},xAxis:{type:'value',name:'30天销量',nameLocation:'middle',nameGap:28,nameTextStyle:{fontSize:11}},yAxis:{type:'category',data:rows.map(x=>x.shop),axisLabel:{width:122,overflow:'truncate'}},series:[{type:'bar',data:rows.map(x=>Number(x.sales30||0)),barMaxWidth:18,label:{show:true,position:'right',fontSize:12},itemStyle:{borderRadius:[0,6,6,0]}}]},true)
+    shopChart.setOption({tooltip:{trigger:'axis',axisPointer:{type:'shadow'},backgroundColor:'rgba(20,28,50,.94)',borderWidth:0,textStyle:{color:'#fff'},formatter(ps){const i=ps?.[0]?.dataIndex||0,row=rows[i]||{};const yesterday=showYesterdaySales.value?`<br>昨日：${n(row.sales_yesterday)}`:'';return `${escapeTooltipText(row.shop)}${yesterday}<br>7天：${n(row.sales7)}<br>14天：${n(row.sales14)}<br>30天：${n(row.sales30)}<br>30天占比：${n(row.share30_pct,1)}%`}},grid:{left:138,right:36,top:12,bottom:46,containLabel:true},xAxis:{type:'value',name:'30天销量',nameLocation:'middle',nameGap:28,nameTextStyle:{fontSize:11}},yAxis:{type:'category',data:rows.map(x=>x.shop),axisLabel:{width:122,overflow:'truncate'}},series:[{type:'bar',data:rows.map(x=>Number(x.sales30||0)),barMaxWidth:18,label:{show:true,position:'right',fontSize:12},itemStyle:{borderRadius:[0,6,6,0]}}]},true)
     shopChart.off('click')
   }
 }

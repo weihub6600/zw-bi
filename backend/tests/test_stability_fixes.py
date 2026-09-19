@@ -325,6 +325,38 @@ class ManifestHashTests(unittest.TestCase):
             self.assertTrue(mod.is_manifest_text_file(p / "VERSION"))
             self.assertFalse(mod.is_manifest_text_file(p / "a.xlsx"))
 
+    def test_frontend_references_must_exist_and_be_manifested(self):
+        import tempfile
+        mod = self._import_mod()
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            assets = root / "frontend-dist" / "assets"
+            assets.mkdir(parents=True)
+            (root / "frontend-dist" / "index.html").write_text(
+                '<script src="/assets/app.js"></script><link href="/assets/app.css">',
+                encoding="utf-8",
+            )
+            (assets / "app.js").write_text("console.log(1)", encoding="utf-8")
+            self.assertEqual(
+                mod.frontend_asset_references(root, {"frontend-dist/assets/app.js": "hash"}),
+                ["/assets/app.css（文件不存在或越界）"],
+            )
+            self.assertEqual(
+                mod.frontend_asset_references(root, {}),
+                ["/assets/app.js（未列入 manifest）", "/assets/app.css（文件不存在或越界）"],
+            )
+
+    def test_frontend_reference_cannot_escape_dist(self):
+        import tempfile
+        mod = self._import_mod()
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "frontend-dist").mkdir()
+            (root / "frontend-dist" / "index.html").write_text(
+                '<script src="/../secret.js"></script>', encoding="utf-8"
+            )
+            self.assertIn("文件不存在或越界", mod.frontend_asset_references(root, {} )[0])
+
 
 if __name__ == "__main__":
     unittest.main()

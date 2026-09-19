@@ -588,6 +588,40 @@ def _resolve_product(db: Session, merchant_code: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def _product_visible_in_department(
+    db: Session,
+    actor: dict[str, Any],
+    department_id: int,
+    product_id: int,
+) -> bool:
+    """Keep direct product-detail access aligned with department visibility."""
+    if actor.get("is_system_admin"):
+        return True
+    visible = db.execute(
+        text(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM sales_daily sd
+                WHERE sd.department_id=:department_id AND sd.product_id=:product_id
+            ) OR EXISTS(
+                SELECT 1 FROM inventory_batch ib
+                WHERE ib.department_id=:department_id AND ib.product_id=:product_id
+            ) OR EXISTS(
+                SELECT 1 FROM aging_snapshot ag
+                WHERE ag.department_id=:department_id AND ag.product_id=:product_id
+            ) OR EXISTS(
+                SELECT 1
+                FROM import_batches b
+                JOIN products p ON p.import_batch_id=b.id
+                WHERE b.department_id=:department_id AND p.id=:product_id
+            )
+            """
+        ),
+        {"department_id": int(department_id), "product_id": int(product_id)},
+    ).scalar()
+    return bool(visible)
+
+
 def _product_sales_metrics(
     db: Session,
     department_id: int,
@@ -919,7 +953,7 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     department_id = int(department["id"])
     product = _resolve_product(db, merchant_code)
-    if not product:
+    if not product or not _product_visible_in_department(db, actor, department_id, int(product["id"])):
         raise LookupError(f"商品不存在：{merchant_code}")
 
     categories = _product_categories(
@@ -1062,7 +1096,7 @@ def save_product_note(
 ) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     product = _resolve_product(db, merchant_code)
-    if not product:
+    if not product or not _product_visible_in_department(db, actor, int(department["id"]), int(product["id"])):
         raise LookupError(f"商品不存在：{merchant_code}")
 
     db.execute(

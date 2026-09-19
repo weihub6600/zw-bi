@@ -3,7 +3,7 @@
 面向批发零售业务的库存与销售数据分析平台。系统每天接收并解析门店提供的库存 / 销售 Excel 与 CSV 文件，
 自动对商品进行**库存健康度评估**（缺货、滞销、临期、动销率、效期预警等），并提供部门级 / 店铺级多维分析看板。
 
-当前版本：**v15.7.6**。仓库开发目录直接位于根目录；正式发布包才使用 `releases/<版本号>/` 布局。
+当前版本：**v15.7.7**。仓库开发目录直接位于根目录；正式发布包才使用 `releases/<版本号>/` 布局。
 
 ## 功能特性
 
@@ -64,7 +64,7 @@ npm run dev
 ### 生产部署（宝塔面板）
 
 生产环境应使用 HTTPS，并设置 `SESSION_COOKIE_SECURE=true`、明确的 `CORS_ORIGINS`，
-以及仅包含实际反向代理地址的 `TRUSTED_PROXY_IPS`。本地 HTTP 开发保持
+以及仅包含实际反向代理地址的 `TRUSTED_PROXY_IPS` 和一次性 `SETUP_INIT_TOKEN`。本地 HTTP 开发保持
 `SESSION_COOKIE_SECURE=false`。部署与升级命令见 `deploy/baota/` 和 `scripts/release_tool.py`。
 
 登录失败限流在应用进程内按账号和可信客户端 IP 分别计数。若生产环境启用多个 Uvicorn
@@ -89,6 +89,7 @@ CI 会启动一次性 MySQL 服务，不读取生产密钥，也不连接生产�
 - 每个正式版本以独立目录 `releases/v<版本号>/` 发布，附带 `manifest.json` 文件哈希清单。
 - `scripts/release_tool.py` 提供 `verify` / `init-schema` / `migrate` / `backup-db` / `restore-db` 等运维能力。
 - 服务器升级通过符号链接 `current` 切换到新版本目录。迁移前必须备份数据库；切回旧应用版本并不自动回滚已执行的数据库迁移。
+- 生产首次安装请使用 `BJR_INSTALL_PRODUCTION=1 bash install.sh /www/wwwroot/baijiarui-bi`，并在初始化接口请求头中提供 `X-Setup-Token`。
 
 ## 许可证
 

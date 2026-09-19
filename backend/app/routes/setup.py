@@ -1,9 +1,11 @@
 from __future__ import annotations
-from fastapi import APIRouter, Depends, HTTPException
+import hmac
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from ..db import get_db
 from ..services.setup_service import setup_status, initialize_system
+from ..core.config import settings
 
 router=APIRouter(prefix='/setup',tags=['setup'])
 
@@ -19,7 +21,10 @@ def status(db:Session=Depends(get_db)):
     return setup_status(db)
 
 @router.post('/initialize')
-def initialize(body:SetupBody,db:Session=Depends(get_db)):
+def initialize(body:SetupBody,db:Session=Depends(get_db),x_setup_token: str | None = Header(default=None)):
+    if settings.app_environment.strip().lower() == "production":
+        if not x_setup_token or not hmac.compare_digest(x_setup_token, settings.setup_init_token):
+            raise HTTPException(status_code=403,detail="首次初始化需要受控初始化令牌")
     try:return initialize_system(db,**body.model_dump())
     except PermissionError as exc:raise HTTPException(status_code=409,detail=str(exc))
     except ValueError as exc:raise HTTPException(status_code=400,detail=str(exc))

@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +119,34 @@ def manifest_file_sha256(path: Path) -> str:
     if is_manifest_text_file(path):
         return manifest_canonical_sha256(path)
     return sha256(path)
+
+
+_LOCAL_FRONTEND_REF = re.compile(r"(?:src|href)=[\"']([^\"']+)[\"']", re.IGNORECASE)
+
+
+def frontend_asset_references(root: Path, manifest_files: dict[str, str]) -> list[str]:
+    """Validate that production index.html references are local, present, and manifested."""
+    index = root / "frontend-dist" / "index.html"
+    if not index.exists():
+        return []
+    missing: list[str] = []
+    html = index.read_text(encoding="utf-8")
+    for ref in _LOCAL_FRONTEND_REF.findall(html):
+        if ref.startswith(("http://", "https://", "//", "data:", "#")):
+            continue
+        clean = ref.split("?", 1)[0].split("#", 1)[0]
+        if not clean:
+            continue
+        rel = clean.lstrip("/")
+        candidate = (root / "frontend-dist" / rel).resolve()
+        frontend_root = (root / "frontend-dist").resolve()
+        if frontend_root not in candidate.parents or not candidate.is_file():
+            missing.append(f"{ref}（文件不存在或越界）")
+            continue
+        manifest_key = (Path("frontend-dist") / rel).as_posix()
+        if manifest_key not in manifest_files:
+            missing.append(f"{ref}（未列入 manifest）")
+    return missing
 
 
 def bootstrap_migration_table(conn):
@@ -328,6 +357,7 @@ def verify_manifest():
             # 二进制文件严格 raw byte 校验。
             if sha256(p) != expected:
                 bad.append(rel)
+    bad.extend(frontend_asset_references(ROOT, data.get('files', {})))
     if bad:
         raise SystemExit('文件校验失败：'+', '.join(bad[:20]))
     print(f"manifest ok: {len(data.get('files',{}))} files")

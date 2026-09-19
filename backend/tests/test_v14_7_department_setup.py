@@ -1,13 +1,44 @@
 from pathlib import Path
 import unittest
+from unittest import mock
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.services.setup_service import setup_status, initialize_system
 from app.services.department_service import require_system_admin
 from app.services.permission_service import PermissionDenied
+from app.core.config import settings, validate_runtime_security
+from app.routes.setup import SetupBody, initialize
 
 class V147DepartmentSetupTests(unittest.TestCase):
+    def test_production_security_requires_setup_token_and_proxy(self):
+        with self.subTest("missing production settings"):
+            with mock.patch.object(settings, "app_environment", "production"), \
+                 mock.patch.object(settings, "session_cookie_secure", True), \
+                 mock.patch.object(settings, "app_secret", "x" * 32), \
+                 mock.patch.object(settings, "cors_origins", "https://bi.example.com"), \
+                 mock.patch.object(settings, "trusted_proxy_ips", "127.0.0.1"), \
+                 mock.patch.object(settings, "setup_init_token", "short"):
+                with self.assertRaisesRegex(RuntimeError, "SETUP_INIT_TOKEN"):
+                    validate_runtime_security()
+
+        with mock.patch.object(settings, "app_environment", "production"), \
+             mock.patch.object(settings, "session_cookie_secure", True), \
+             mock.patch.object(settings, "app_secret", "x" * 32), \
+             mock.patch.object(settings, "cors_origins", "https://bi.example.com"), \
+             mock.patch.object(settings, "trusted_proxy_ips", "127.0.0.1"), \
+             mock.patch.object(settings, "setup_init_token", "t" * 16):
+            validate_runtime_security()
+
+    def test_production_setup_requires_matching_token(self):
+        body = SetupBody(admin_password="StrongPass123!")
+        with mock.patch.object(settings, "app_environment", "production"), \
+             mock.patch.object(settings, "setup_init_token", "t" * 16):
+            with self.assertRaisesRegex(Exception, "首次初始化需要受控初始化令牌"):
+                initialize(body, object(), None)
+            with mock.patch("app.routes.setup.initialize_system", return_value={"ok": True}):
+                result = initialize(body, object(), "t" * 16)
+                self.assertEqual(result, {"ok": True})
     def test_system_admin_boundary(self):
         require_system_admin({'is_system_admin':1})
         with self.assertRaises(PermissionDenied):
