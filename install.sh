@@ -37,7 +37,7 @@ fi
 mkdir -p "$RELEASE_DIR"
 for x in backend frontend-dist templates deploy scripts VERSION manifest.json .env.example install.sh README_DEPLOY.txt; do [ -e "$SOURCE_DIR/$x" ] && cp -a "$SOURCE_DIR/$x" "$RELEASE_DIR/"; done
 if [ ! -f "$RELEASE_DIR/frontend-dist/index.html" ]; then
-  echo "生产包没有 frontend-dist/index.html。请在 Windows 开发机运行 发布生产包.cmd 生成正式安装包。"; exit 12
+  echo "生产包没有 frontend-dist/index.html。请在 Windows 开发机先运行 python scripts/build_frontend_dist.py 生成正式安装包。"; exit 12
 fi
 python3 -m venv "$APP_ROOT/.venv"
 "$APP_ROOT/.venv/bin/python" -m pip install --upgrade pip

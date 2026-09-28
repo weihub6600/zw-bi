@@ -65,7 +65,7 @@ start_backend(){
 echo "=== 百嘉瑞BI 升级 ${OLD_VERSION:-unknown} -> $NEW_VERSION ==="
 [ -f "$APP_ROOT/shared/.env" ] || { echo "缺少 shared/.env"; exit 2; }
 [ -x "$PY" ] || { echo "缺少共享 Python venv：$PY"; exit 3; }
-[ -f "$SOURCE_DIR/frontend-dist/index.html" ] || { echo "升级包缺少 frontend-dist/index.html；请从 Windows 发布脚本生成生产包。"; exit 4; }
+[ -f "$SOURCE_DIR/frontend-dist/index.html" ] || { echo "升级包缺少 frontend-dist/index.html；请在 Windows 开发机先运行 python scripts/build_frontend_dist.py 生成生产包。"; exit 4; }
 "$PY" "$SOURCE_DIR/scripts/release_tool.py" verify
 "$PY" "$SOURCE_DIR/scripts/release_tool.py" db-ping
 mkdir -p "$APP_ROOT/shared/backups" "$APP_ROOT/releases" "$APP_ROOT/shared/run"
