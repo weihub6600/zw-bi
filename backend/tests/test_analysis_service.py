@@ -1,9 +1,16 @@
 import unittest
+from datetime import date
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from app.services.analysis_service import _product_visible_in_department, classify_inventory_health
+from app.services.analysis_service import (
+    _optional_cost_reference,
+    _product_visible_in_department,
+    classify_inventory_health,
+)
 
 
 class InventoryClassificationTests(unittest.TestCase):
@@ -65,6 +72,30 @@ class ProductVisibilityTests(unittest.TestCase):
             self.assertFalse(_product_visible_in_department(db, member, 1, 2))
             self.assertTrue(_product_visible_in_department(db, member, 1, 3))
             self.assertTrue(_product_visible_in_department(db, system, 1, 2))
+
+
+class OptionalCostReferenceTests(unittest.TestCase):
+    def test_missing_cost_migration_does_not_break_product_detail(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        try:
+            with Session(engine) as db, patch("app.services.analysis_service._assert_product_visible"):
+                result = _optional_cost_reference(db, 1, 2, date(2026, 9, 1), date(2026, 9, 25))
+                self.assertIsNone(result)
+                self.assertEqual(db.execute(text("SELECT 1")).scalar_one(), 1)
+        finally:
+            engine.dispose()
+
+    def test_unrelated_database_errors_are_not_hidden(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        error = OperationalError("SELECT", {}, Exception("database connection lost"))
+        try:
+            with Session(engine) as db, patch("app.services.analysis_service._assert_product_visible"), patch(
+                "app.services.analysis_service.cost_reference", side_effect=error
+            ):
+                with self.assertRaises(OperationalError):
+                    _optional_cost_reference(db, 1, 2, date(2026, 9, 1), date(2026, 9, 25))
+        finally:
+            engine.dispose()
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ from ..services.import_db_service import (
 )
 from ..services.import_parser import ImportValidationError, parse_import_file, parsed_preview, sha256_file
 from ..services.permission_service import ActorNotFound, PermissionDenied, assert_can_import
+from ..core.timezone import today_local
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 DataType = Literal["sales", "inventory", "product", "aging"]
@@ -90,6 +91,7 @@ def preview_import(
     data_type: DataType = Form(...),
     department_code: str = Form("B2C"),
     business_date: date | None = Form(None),
+    cost_effective_date: date | None = Form(None),
     file: UploadFile = File(...),
     actor: dict = Depends(require_actor),
     db: Session = Depends(get_db),
@@ -97,7 +99,13 @@ def preview_import(
     temp_path = _save_upload(file)
     try:
         _, department = assert_can_import(db, actor["user_id"], department_code)
-        parsed = parse_import_file(temp_path, data_type, business_date)
+        parsed = parse_import_file(temp_path, data_type, business_date, cost_effective_date=cost_effective_date)
+        if parsed.data_type == "product" and parsed.contains_cost_values and not actor.get("is_system_admin"):
+            raise PermissionDenied("当前未授予商品成本维护权限；请移除成本价数据或联系系统管理员")
+        if parsed.data_type == "product" and parsed.contains_cost_values:
+            parsed.cost_effective_date = cost_effective_date or today_local()
+        if parsed.data_type == "product" and parsed.contains_cost_values and cost_effective_date not in (None, today_local()):
+            raise ImportExecutionError("成本生效日期暂仅支持业务当天；历史补录和未来生效需要受控确认流程")
         result = parsed_preview(parsed, limit=10)
         file_hash = sha256_file(temp_path)
         result["original_filename"] = file.filename
@@ -190,6 +198,7 @@ def commit_import(
     data_type: DataType = Form(...),
     department_code: str = Form("B2C"),
     business_date: date | None = Form(None),
+    cost_effective_date: date | None = Form(None),
     file: UploadFile = File(...),
     actor: dict = Depends(require_actor),
     db: Session = Depends(get_db),
@@ -197,7 +206,7 @@ def commit_import(
     temp_path = _save_upload(file)
     try:
         # import_file 内部再次强制权限校验；普通用户无法绕过 preview 直接 commit。
-        result = import_file(db, temp_path, data_type, business_date, department_code, actor["user_id"], original_filename=file.filename)
+        result = import_file(db, temp_path, data_type, business_date, department_code, actor["user_id"], original_filename=file.filename, cost_effective_date=cost_effective_date)
         result["original_filename"] = file.filename
         return result
     except Exception as exc:

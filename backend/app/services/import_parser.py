@@ -37,12 +37,14 @@ class ParsedImport:
     data_type: str
     source_file: str
     business_date: date | None
+    cost_effective_date: date | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
     errors: list[RowError] = field(default_factory=list)
     warnings: list[RowError] = field(default_factory=list)
     header_mapping: dict[str, str] = field(default_factory=dict)
     source_row_count: int = 0
     skipped_rows: int = 0
+    contains_cost_values: bool = False
 
     @property
     def valid_rows(self) -> int:
@@ -61,6 +63,7 @@ class ParsedImport:
             "data_type": self.data_type,
             "source_file": self.source_file,
             "business_date": self.business_date.isoformat() if self.business_date else None,
+            "cost_effective_date": self.cost_effective_date.isoformat() if self.cost_effective_date else None,
             "source_rows": self.source_row_count,
             "valid_rows": self.valid_rows,
             "error_rows": self.error_rows,
@@ -74,12 +77,15 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "product": {
         "required": ["merchant_code", "product_name"],
         "aliases": {
-            "merchant_code": ["商家编码", "商品编码", "货品编码"],
-            "product_name": ["货品名称", "商品名称", "商品名"],
+            "merchant_code": ["商家编码", "商家编码（必填）", "商品编码", "货品编码"],
+            "product_name": ["货品名称", "货品名称（必填）", "商品名称", "商品名"],
             "spec": ["规格", "规格名称"],
             "brand": ["品牌"],
             "category": ["分类", "商品分类"],
             "barcode": ["条码", "商品条码"],
+            "unit_cost": ["成本价", "含税成本价", "商品成本价"],
+            "cost_currency": ["成本币种", "币种"],
+            "cost_unit": ["成本单位", "计量单位"],
         },
     },
     "sales": {
@@ -308,6 +314,7 @@ def parse_import_file(
     data_type: str,
     business_date: date | None = None,
     *,
+    cost_effective_date: date | None = None,
     reject_aggregate_sales: bool = True,
 ) -> ParsedImport:
     if data_type not in SCHEMAS:
@@ -334,7 +341,7 @@ def parse_import_file(
         if close:
             close()
         raise
-    parsed = ParsedImport(data_type=data_type, source_file=file_path.name, business_date=business_date)
+    parsed = ParsedImport(data_type=data_type, source_file=file_path.name, business_date=business_date, cost_effective_date=cost_effective_date)
     parsed.header_mapping = {key: _clean_text(headers[idx]) for key, idx in mapping.items()}
     seen_names: dict[str, str] = {}
 
@@ -359,6 +366,9 @@ def parse_import_file(
             def val(key: str) -> Any:
                 idx = mapping.get(key)
                 return row[idx] if idx is not None and idx < len(row) else None
+
+            if data_type == "product" and _clean_text(val("unit_cost")):
+                parsed.contains_cost_values = True
 
             merchant_code = _clean_text(val("merchant_code"))
             product_name = _clean_text(val("product_name"))
@@ -395,6 +405,14 @@ def parse_import_file(
                     "category": _clean_text(val("category")) or None,
                     "barcode": _clean_text(val("barcode")) or None,
                 })
+                cost_raw = val("unit_cost")
+                if _clean_text(cost_raw):
+                    cost = _to_decimal(cost_raw, "成本价")
+                    if cost <= 0 or cost.as_tuple().exponent < -6:
+                        raise ImportValidationError("INVALID_COST", "成本价必须大于 0 且最多保留 6 位小数")
+                    base["unit_cost"] = cost
+                    base["cost_currency"] = _clean_text(val("cost_currency")).upper() or None
+                    base["cost_unit"] = _clean_text(val("cost_unit")) or None
             elif data_type == "sales":
                 shop = _clean_text(val("shop_name"))
                 wh = _clean_text(val("warehouse_name"))

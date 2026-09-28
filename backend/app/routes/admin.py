@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ..core.auth import require_actor
@@ -15,6 +16,8 @@ from ..services.admin_service import (
 from ..services.permission_service import PermissionDenied
 from ..services.department_service import list_departments, create_department, update_department, delete_department, list_department_members, set_membership, remove_membership
 from ..services.audit_service import list_audit_logs
+from datetime import date
+from ..services.cost_service import is_missing_cost_table_error, list_cost_history, save_manual_cost, search_department_products
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -24,6 +27,15 @@ def _handle(exc: Exception):
     if isinstance(exc, LookupError): raise HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, ValueError): raise HTTPException(status_code=400, detail=str(exc))
     raise exc
+
+
+def _handle_cost_error(exc: Exception):
+    if isinstance(exc, SQLAlchemyError) and is_missing_cost_table_error(exc):
+        raise HTTPException(
+            status_code=503,
+            detail="当前数据库尚未安装商品成本表，请先执行 0159_department_product_costs migration",
+        )
+    _handle(exc)
 
 
 class CreateUserBody(BaseModel):
@@ -55,6 +67,14 @@ class ProductCategoryBody(BaseModel):
 class ProductCategoryAssignmentBody(BaseModel):
     product_ids: list[int] = Field(min_length=1, max_length=500)
     category_ids: list[int] = Field(default_factory=list, max_length=100)
+
+
+class ProductCostBody(BaseModel):
+    merchant_code: str = Field(min_length=1, max_length=128)
+    unit_cost: str = Field(min_length=1, max_length=64)
+    effective_date: date
+    currency: str = Field(default="CNY", min_length=3, max_length=3)
+    unit: str = Field(default="件", min_length=1, max_length=32)
 
 
 @router.get("/users")
@@ -136,6 +156,24 @@ def edit_product_category(category_id: int, body: ProductCategoryBody, departmen
 def remove_product_category(category_id: int, department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
     try: return delete_product_category(db, actor, department_code, category_id)
     except Exception as exc: db.rollback(); _handle(exc)
+
+
+@router.get("/product-costs/{merchant_code}")
+def product_cost_history(merchant_code: str, department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
+    try: return list_cost_history(db, actor, department_code, merchant_code)
+    except Exception as exc: _handle_cost_error(exc)
+
+
+@router.get("/product-costs/products/search")
+def product_cost_product_search(q: str = Query("", max_length=128), department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
+    try: return search_department_products(db, actor, department_code, q)
+    except Exception as exc: _handle_cost_error(exc)
+
+
+@router.post("/product-costs")
+def add_product_cost(body: ProductCostBody, department_code: str = "B2C", actor: dict = Depends(require_actor), db: Session = Depends(get_db)):
+    try: return save_manual_cost(db, actor, department_code, **body.model_dump())
+    except Exception as exc: db.rollback(); _handle_cost_error(exc)
 
 
 class DepartmentBody(BaseModel):

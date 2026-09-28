@@ -29,9 +29,9 @@ from .expiry_service import is_long_term_expiry, total_shelf_days
 from .permission_service import assert_can_view_department
 from .auth_service import record_activity
 from .product_category_codec import display_category_names, parse_category_names
+from .cost_service import _assert_product_visible, cost_reference, costs_as_of, is_missing_cost_table_error
 from ..core.timezone import today_local
 from ..core.sql import like_contains, like_prefix
-
 
 # 这两个阈值目前作为可配置默认值使用，不作为不可变业务规则锁死。
 DEFAULT_HIGH_COVER_DAYS = 90
@@ -45,6 +45,25 @@ CATEGORY_LABELS = {
     "no_sales": "无销量库存",
     "stockout": "缺货动销",
 }
+
+
+def _optional_cost_reference(
+    db: Session,
+    department_id: int,
+    product_id: int,
+    start_date: date | None,
+    end_date: date,
+) -> dict[str, Any] | None:
+    try:
+        _assert_product_visible(db, department_id, product_id)
+    except LookupError:
+        return None
+    try:
+        return cost_reference(db, department_id, product_id, start_date, end_date)
+    except SQLAlchemyError as exc:
+        if not is_missing_cost_table_error(exc):
+            raise
+        return None
 
 
 def _product_category_names_by_product(db: Session, product_ids: list[int]) -> dict[int, str]:
@@ -180,6 +199,7 @@ def get_inventory_analysis(
     stagnant_cover_days: int = DEFAULT_STAGNANT_COVER_DAYS,
     detail_warehouses: bool = False,
     detail_product_categories: bool = False,
+    detail_costs: bool = False,
 ) -> dict[str, Any]:
     actor, department = assert_can_view_department(db, scope.actor_user_id, scope.department_code)
     department_id = int(department["id"])
@@ -253,6 +273,20 @@ def get_inventory_analysis(
     if category in CATEGORY_LABELS:
         rows = [r for r in rows if r["category"] == category]
 
+    cost_visible = bool(detail_costs and actor.get("is_system_admin"))
+    if cost_visible and rows:
+        cost_date = latest_sales_date or latest_inventory_date or today_local()
+        try:
+            cost_map = costs_as_of(db, department_id, [int(row["product_id"]) for row in rows], cost_date)
+        except SQLAlchemyError as exc:
+            if not is_missing_cost_table_error(exc):
+                raise
+            cost_map = {}
+        for row in rows:
+            cost = cost_map.get(int(row["product_id"]))
+            row["unit_cost"] = cost["unit_cost"] if cost else None
+            row["cost_effective_date"] = cost["effective_date"] if cost else None
+
     if detail_product_categories and rows:
         product_ids = sorted({int(row["product_id"]) for row in rows})
         product_categories = _product_category_names_by_product(db, product_ids)
@@ -297,6 +331,7 @@ def get_inventory_analysis(
             "warehouse_columns": warehouse_columns,
             "detail_warehouses": detail_warehouses,
             "detail_product_categories": detail_product_categories,
+            "cost_visible": cost_visible,
         },
         "categories": categories,
         "selected_category": category if category in CATEGORY_LABELS else None,
@@ -1040,6 +1075,13 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
         {"user_pk": actor["id"], "product_id": product["id"]},
     ).mappings().first()
 
+    selected_start, selected_end, _ = selected_sales_range(scope, latest_sales_date) if latest_sales_date else (None, today_local(), scope.days)
+    cost_ref = None
+    if actor.get("is_system_admin") and selected_end:
+        cost_ref = _optional_cost_reference(
+            db, department_id, int(product["id"]), selected_start, selected_end
+        )
+
     return {
         "meta": {
             "department": {"code": department["code"], "name": department["name"]},
@@ -1084,6 +1126,7 @@ def get_product_detail(db: Session, scope: DashboardScope, merchant_code: str) -
         },
         "expiry_batches": batches,
         "personal_note": {"note": note["note"] if note else "", "updated_at": str(note["updated_at"]) if note else None},
+        **({"cost_reference": cost_ref} if cost_ref is not None else {}),
         "tasks": _product_tasks(db, actor, department_id, int(product["id"])),
     }
 

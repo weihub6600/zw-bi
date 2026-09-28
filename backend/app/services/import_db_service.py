@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -37,6 +38,11 @@ class SystemImportError(RuntimeError):
 
 
 _SYSTEM_ERROR_CODES = {1146, 1054, 1142, 1143, 1044, 1045, 1049, 2013, 2006, 0}
+_PRODUCT_COST_RAW_HEADERS = {
+    "unitcost", "成本价", "含税成本价", "商品成本价",
+    "costcurrency", "成本币种", "币种",
+    "costunit", "成本单位", "计量单位",
+}
 
 
 def _is_system_level_error(exc: Exception) -> bool:
@@ -67,6 +73,22 @@ def _is_system_level_error(exc: Exception) -> bool:
     if "syntax error" in msg.lower() and "sql" in msg.lower():
         return True
     return False
+
+
+def _redact_product_cost_raw_data(raw_data: Any) -> Any:
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(raw_data, dict):
+        return raw_data
+    redacted = {}
+    for key, value in raw_data.items():
+        normalized = re.sub(r"[\s_\-（）()]", "", str(key)).casefold()
+        if normalized not in _PRODUCT_COST_RAW_HEADERS:
+            redacted[key] = value
+    return redacted
 
 
 def _batch_no(data_type: str, business_date: date | None) -> str:
@@ -585,6 +607,49 @@ def _upsert_aging(db: Session, batch_id: int, department_id: int, product_id: in
         _record_change(db, batch_id, "aging_snapshot", int(result.lastrowid), "inserted", None)
 
 
+def _upsert_import_cost(
+    db: Session,
+    batch_id: int,
+    department_id: int,
+    product_id: int,
+    actor_id: int,
+    unit_cost: Decimal,
+    effective_date: date,
+    currency: str | None = None,
+    unit: str | None = None,
+) -> None:
+    currency = str(currency or "").strip().upper() or None
+    unit = str(unit or "").strip() or None
+    if currency and not re.fullmatch(r"[A-Z]{3}", currency):
+        raise ImportExecutionError("成本币种必须使用 3 位 ISO 代码，例如 CNY")
+    if unit and len(unit) > 32:
+        raise ImportExecutionError("成本计量单位最多 32 个字符")
+    existing = db.execute(
+        text(
+            """
+            SELECT id,unit_cost,currency,unit FROM department_product_costs
+            WHERE department_id=:department_id AND product_id=:product_id AND effective_date=:effective_date
+            """
+        ),
+        {"department_id": department_id, "product_id": product_id, "effective_date": effective_date},
+    ).mappings().first()
+    if existing:
+        if Decimal(str(existing["unit_cost"])) == unit_cost and existing["currency"] == currency and existing["unit"] == unit:
+            return
+        raise ImportExecutionError("同部门同商品同生效日已有不同成本价，不能静默覆盖")
+    result = db.execute(
+        text(
+            """
+            INSERT INTO department_product_costs(
+              department_id,product_id,effective_date,unit_cost,currency,unit,source,source_import_batch_id,created_by
+            ) VALUES(:department_id,:product_id,:effective_date,:unit_cost,:currency,:unit,'product_import',:batch_id,:actor_id)
+            """
+        ),
+        {"department_id": department_id, "product_id": product_id, "effective_date": effective_date, "unit_cost": unit_cost, "currency": currency, "unit": unit, "batch_id": batch_id, "actor_id": actor_id},
+    )
+    _record_change(db, batch_id, "department_product_costs", int(result.lastrowid), "inserted", None)
+
+
 def _purge_older_snapshot_rollback_logs(
     db: Session, department_id: int, data_type: str, current_batch_id: int
 ) -> None:
@@ -613,6 +678,11 @@ def import_parsed(
     original_filename: str | None = None,
 ) -> dict[str, Any]:
     actor, department = assert_can_import(db, actor_user_id, department_code)
+    if parsed.data_type == "product" and parsed.contains_cost_values and not actor.get("is_system_admin"):
+        raise PermissionDenied("当前未授予商品成本维护权限；请移除成本价数据或联系系统管理员")
+    cost_effective_date = parsed.cost_effective_date or today_local()
+    if parsed.data_type == "product" and parsed.contains_cost_values and cost_effective_date != today_local():
+        raise ImportExecutionError("成本生效日期暂仅支持业务当天；历史补录和未来生效需要受控确认流程")
     file_hash = sha256_file(file_path)
 
     duplicate = db.execute(
@@ -716,6 +786,11 @@ def import_parsed(
                 # 每一行使用 SAVEPOINT。某一行失败时只回滚该行，不污染整个导入批次。
                 with db.begin_nested():
                     product_id = _get_or_create_product(db, batch_id, row, parsed.data_type, warnings, product_cache)
+                    if parsed.data_type == "product" and row.get("unit_cost") is not None:
+                        _upsert_import_cost(
+                            db, batch_id, int(department["id"]), product_id, int(actor["id"]),
+                            row["unit_cost"], cost_effective_date, row.get("cost_currency"), row.get("cost_unit"),
+                        )
                     if parsed.data_type == "sales":
                         _upsert_sales(db, batch_id, department["id"], product_id, row)
                     elif parsed.data_type == "inventory":
@@ -815,8 +890,9 @@ def import_file(
     department_code: str,
     actor_user_id: str,
     original_filename: str | None = None,
+    cost_effective_date: date | None = None,
 ) -> dict[str, Any]:
-    parsed = parse_import_file(file_path, data_type, business_date)
+    parsed = parse_import_file(file_path, data_type, business_date, cost_effective_date=cost_effective_date)
     return import_parsed(db, parsed, file_path, department_code, actor_user_id, original_filename=original_filename)
 
 
@@ -878,12 +954,13 @@ def _assert_product_not_referenced(db: Session, product_id: int, batch_id: int) 
         ("sales_daily", "import_batch_id"),
         ("inventory_batch", "import_batch_id"),
         ("aging_snapshot", "import_batch_id"),
+        ("department_product_costs", "source_import_batch_id"),
         ("todo_tasks", None),
     ]
     for table_name, batch_col in checks:
         if batch_col:
             row = db.execute(
-                text(f"SELECT id FROM {table_name} WHERE product_id=:product_id AND (import_batch_id IS NULL OR import_batch_id<>:batch_id) LIMIT 1"),
+                text(f"SELECT id FROM {table_name} WHERE product_id=:product_id AND ({batch_col} IS NULL OR {batch_col}<>:batch_id) LIMIT 1"),
                 {"product_id": product_id, "batch_id": batch_id},
             ).first()
         else:
@@ -928,7 +1005,7 @@ def rollback_batch(db: Session, batch_no: str, actor_user_id: str) -> dict[str, 
             raise RollbackConflictError("销量按日期覆盖后，仅允许回滚该日期当前最新成功批次")
 
     department = db.execute(text("SELECT code FROM departments WHERE id=:id"), {"id": batch["department_id"]}).first()
-    assert_can_import(db, actor_user_id, department[0])
+    actor, _ = assert_can_import(db, actor_user_id, department[0])
 
     changes = db.execute(
         text("SELECT * FROM import_changes WHERE import_batch_id=:batch_id ORDER BY id DESC"),
@@ -937,15 +1014,34 @@ def rollback_batch(db: Session, batch_no: str, actor_user_id: str) -> dict[str, 
     if batch["data_type"] in {"inventory", "aging"} and not changes:
         raise RollbackConflictError("该快照批次的上一层回滚数据已按最新快照保留策略清理，不能继续向前回滚")
 
+    if any(change["table_name"] == "department_product_costs" for change in changes) and not actor.get("is_system_admin"):
+        raise PermissionDenied("仅系统管理员可回滚包含商品成本版本的导入批次")
+
     for change in changes:
         table_name = change["table_name"]
-        if table_name not in {"sales_daily", "inventory_batch", "aging_snapshot", "products"}:
+        if table_name not in {"sales_daily", "inventory_batch", "aging_snapshot", "products", "department_product_costs"}:
             raise RollbackConflictError(f"未知回滚表：{table_name}")
         row_pk = int(change["row_pk"])
         action = change["action"]
         if action == "inserted":
             if table_name == "products":
                 _assert_product_not_referenced(db, row_pk, int(batch["id"]))
+            if table_name == "department_product_costs":
+                later = db.execute(
+                    text(
+                        """
+                        SELECT 1 FROM department_product_costs current
+                        JOIN department_product_costs target ON target.id=:id
+                        WHERE current.department_id=target.department_id
+                          AND current.product_id=target.product_id
+                          AND current.effective_date>target.effective_date
+                        LIMIT 1
+                        """
+                    ),
+                    {"id": row_pk},
+                ).first()
+                if later:
+                    raise RollbackConflictError("该成本版本已有后续生效版本，不能直接回滚删除")
             db.execute(text(f"DELETE FROM {table_name} WHERE id=:id"), {"id": row_pk})
         elif action == "deleted":
             before = change["before_data"]
@@ -1219,7 +1315,7 @@ def import_batch_issues(
     """分页读取批次错误/警告明细，供数据质量页面使用。"""
     if severity not in {None, "", "error", "warning"}:
         raise ImportExecutionError("severity 只支持 error / warning")
-    batch, _ = _authorized_import_batch(db, batch_no, actor_user_id)
+    batch, actor = _authorized_import_batch(db, batch_no, actor_user_id)
     where = "import_batch_id=:batch_id"
     params: dict[str, Any] = {"batch_id": batch["id"]}
     if severity:
@@ -1240,6 +1336,10 @@ def import_batch_issues(
         ),
         {**params, "limit": safe_limit, "offset": safe_offset},
     ).mappings().all()
+    items = [json_safe(dict(r)) for r in rows]
+    if batch["data_type"] == "product" and not actor.get("is_system_admin"):
+        for item in items:
+            item["raw_data"] = _redact_product_cost_raw_data(item.get("raw_data"))
     return {
         "batch_no": batch_no,
         "data_type": batch["data_type"],
@@ -1247,5 +1347,5 @@ def import_batch_issues(
         "total": total,
         "limit": safe_limit,
         "offset": safe_offset,
-        "items": [json_safe(dict(r)) for r in rows],
+        "items": items,
     }

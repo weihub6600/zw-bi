@@ -476,6 +476,7 @@ def export_inventory_analysis(
     category: str | None = None,
     detail_warehouses: bool = False,
     detail_product_categories: bool = False,
+    detail_costs: bool = False,
 ) -> dict[str, Any]:
     """导出库存明细（InventoryView 的 SKU 级库存健康度），复用 get_inventory_analysis 完整筛选与权限。"""
     scope = _scope_from_params(
@@ -487,18 +488,22 @@ def export_inventory_analysis(
     )
     result = get_inventory_analysis(
         db, scope, category=category, detail_warehouses=detail_warehouses,
-        detail_product_categories=detail_product_categories,
+        detail_product_categories=detail_product_categories, detail_costs=detail_costs,
     )
     actor, department = assert_can_view_department(db, actor_user_id, department_code)
     rows = result["rows"]
     _ensure_export_row_limit(len(rows))
     warehouse_columns = result.get("meta", {}).get("warehouse_columns", [])
+    cost_visible = bool(result.get("meta", {}).get("cost_visible"))
     headers = INVENTORY_ANALYSIS_HEADERS
+    if cost_visible:
+        headers = ["商家编码", "商品名称", "成本价/元", "库存分类", "库存数量", "昨日销量", "近7天销量", "近14天销量", "近30天销量", "上月销量", "预测日均销量", "可售天数", "加权库龄天数", "最大库龄天数"]
     if detail_product_categories:
-        headers = ["商家编码", "商品名称", "商品分类", "库存分类", "库存数量", "昨日销量", "近7天销量", "近14天销量", "近30天销量", "上月销量", "预测日均销量", "可售天数", "加权库龄天数", "最大库龄天数"]
+        headers = ["商家编码", "商品名称", *( ["成本价/元"] if cost_visible else [] ), "商品分类", "库存分类", "库存数量", "昨日销量", "近7天销量", "近14天销量", "近30天销量", "上月销量", "预测日均销量", "可售天数", "加权库龄天数", "最大库龄天数"]
     if detail_warehouses:
         headers = [
             "商家编码", "商品名称",
+            *( ["成本价/元"] if cost_visible else [] ),
             *( ["商品分类"] if detail_product_categories else [] ),
             "库存分类", *warehouse_columns,
             "总库存", "昨日销量", "近7天销量", "近14天销量", "近30天销量", "上月销量", "预测日均销量",
@@ -507,6 +512,7 @@ def export_inventory_analysis(
     data = [
         [
             r["sku"], r["name"],
+            *([_to_float(r.get("unit_cost"))] if cost_visible else []),
             *([r.get("product_category_names", "")] if detail_product_categories else []),
             r["category_label"], _to_float(r["stock_qty"]),
             _to_float(r.get("sales_yesterday")), _to_float(r["sales7"]), _to_float(r["sales14"]), _to_float(r["sales30"]), _to_float(r.get("sales_last_month")),
@@ -519,6 +525,7 @@ def export_inventory_analysis(
         data = [
             [
                 r["sku"], r["name"],
+                *([_to_float(r.get("unit_cost"))] if cost_visible else []),
                 *([r.get("product_category_names", "")] if detail_product_categories else []),
                 r["category_label"],
                 *[_to_float(r.get("warehouse_stocks", {}).get(warehouse, 0)) for warehouse in warehouse_columns],
