@@ -35,6 +35,7 @@ GNU tar 会把 `D:/xxx` 的参数当成「远程主机 D」并报 `Cannot connec
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import shutil
@@ -43,24 +44,23 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------- 常量规则
-# 与 scripts/release_tool.py 的 verify_manifest() 保持一致：
-# 这些后缀/文件名按「文本」处理，校验时把 CRLF/CR 归一化成 LF 再算 sha256；
-# 其余（二进制，如 .xlsx / .png / .woff2）按原始字节算。
-TEXT_SUFFIXES = {
-    ".py", ".sql", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".css", ".scss",
-    ".html", ".htm", ".json", ".txt", ".md", ".sh", ".bash", ".vue", ".yaml",
-    ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".xml", ".csv", ".svg",
+# ⚠️ 这两组必须与 scripts/release_tool.py 的 MANIFEST_TEXT_SUFFIXES /
+#    MANIFEST_TEXT_NAMES **完全一致** —— 它们决定哪些文件做 LF 归一化后再算 sha256。
+#    任何不一致都会让生成的 manifest 在部署侧 release_tool.py verify 时报哈希不匹配。
+#    脚本启动时会用 _assert_rules_match_release_tool() 做 AST 级比对，漂移即报错。
+#
+#    这里不直接 import release_tool.py，因为它顶层会 `from app.core.config import
+#    settings`（依赖后端 venv），在开发机上导不进来。
+MANIFEST_TEXT_SUFFIXES = {
+    ".py", ".sql", ".js", ".css", ".html", ".json", ".txt", ".md", ".sh",
+    ".vue", ".yaml", ".yml", ".toml", ".ini", ".cfg",
 }
-TEXT_NAMES = {
-    "VERSION", "LICENSE", ".env.example", ".gitignore", ".gitattributes",
-    "Dockerfile", "Makefile", "Procfile",
-}
+MANIFEST_TEXT_NAMES = {"VERSION", "LICENSE", ".env.example", ".gitignore", ".gitattributes"}
+
 # manifest 自身不参与哈希（否则自指）
 EXCLUDE_FROM_MANIFEST = {"manifest.json"}
 # 不需要进生产包的目录/文件
 PACKAGE_EXCLUDES = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}
-
-TEXT_SUFFIXES = {s.lower() for s in TEXT_SUFFIXES}
 
 
 def log(msg=""):
@@ -68,7 +68,54 @@ def log(msg=""):
 
 
 def is_text(path: Path) -> bool:
-    return path.suffix.lower() in TEXT_SUFFIXES or path.name in TEXT_NAMES
+    return path.suffix.lower() in MANIFEST_TEXT_SUFFIXES or path.name in MANIFEST_TEXT_NAMES
+
+
+def _assert_rules_match_release_tool(repo: Path) -> None:
+    """用 AST 读取 release_tool.py 的判定规则，与本脚本比对，防止两边漂移。"""
+    rt = repo / "scripts" / "release_tool.py"
+    if not rt.is_file():
+        log(f"[警告] 找不到 {rt}，跳过规则一致性自检")
+        return
+    try:
+        tree = ast.parse(rt.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        log(f"[警告] 解析 release_tool.py 失败（{exc}），跳过规则一致性自检")
+        return
+
+    found = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in (
+                "MANIFEST_TEXT_SUFFIXES", "MANIFEST_TEXT_NAMES"
+            ):
+                try:
+                    found[target.id] = set(ast.literal_eval(node.value))
+                except ValueError:
+                    pass
+
+    mine = {
+        "MANIFEST_TEXT_SUFFIXES": MANIFEST_TEXT_SUFFIXES,
+        "MANIFEST_TEXT_NAMES": MANIFEST_TEXT_NAMES,
+    }
+    problems = []
+    for name, local in mine.items():
+        remote = found.get(name)
+        if remote is None:
+            continue
+        if remote != local:
+            problems.append(
+                f"  {name}: 本脚本多出 {sorted(local - remote) or '无'}；"
+                f"缺少 {sorted(remote - local) or '无'}"
+            )
+    if problems:
+        sys.exit(
+            "[FATAL] 文本文件判定规则与 scripts/release_tool.py 不一致，"
+            "生成的 manifest 会在部署侧校验失败：\n" + "\n".join(problems)
+        )
+    log("    规则自检：与 release_tool.py 一致 ✅")
 
 
 def sha256_of(path: Path) -> str:
@@ -191,6 +238,7 @@ def tracked_files(repo: Path):
 
 def build_manifest(repo: Path, out_fd: Path) -> dict:
     log("[4] 生成 manifest.json")
+    _assert_rules_match_release_tool(repo)
     files = {}
     for rel in tracked_files(repo):
         # frontend-dist/ 下的文件从**新组装的目录**读，其余从仓库根读

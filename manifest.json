@@ -163,7 +163,7 @@
     "frontend/src/views/YunCangCalculatorView.vue": "c62a97b65c3de8c1d2837c2c6c9d8d6f3a487f7fdc8fb2aff3d7e601fa7d2e5b",
     "frontend/vite.config.js": "e080b63852bcb08a757a4a45d27aef5b05479044783b62e2808e01768f9a9b5c",
     "install.sh": "40c68b46c4837af5aa1f466daa4a4e5f7d79f05012bd42a20a07f18674997088",
-    "scripts/build_frontend_dist.py": "a22660b2991bff6a3ffee09cefb3162b64df609acce7ffad68ebf03162ffa95b",
+    "scripts/build_frontend_dist.py": "477ac397dd977b4ed5c4a3fdb6c1d6bdedc7d170323fada5999d3229df715f57",
     "scripts/release_tool.py": "a2dd95a8dbdccc367072942c3747b0cf21a2e8dcbe7ad1693a00d03bfddba7a8",
     "百嘉瑞BI_灾难恢复步骤.md": "756dc77087d0eadda4b5b896a5d2b72f3de0203f8f738b1b32e50686f36d6fbb"
   }
