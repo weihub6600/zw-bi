@@ -3,11 +3,13 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ArrowUpDown, Download, Warehouse } from 'lucide-vue-next'
 import FilterBar from '../components/FilterBar.vue'
 import { useFilterStore } from '../stores/filter'
+import { useAuthStore } from '../stores/auth'
 import { fetchDashboardOptions } from '../api/dashboard'
 import { fetchInventoryAnalysis } from '../api/analysis'
 import { exportInventoryAnalysis } from '../api/exports'
 
 const f = useFilterStore()
+const auth = useAuthStore()
 const data = ref(null)
 const error = ref('')
 const loading = ref(false)
@@ -16,6 +18,7 @@ const warehouseOptions = ref([])
 const productCategoryOptions = ref([])
 const detailWarehouses = ref(false)
 const detailProductCategories = ref(false)
+const detailCosts = ref(false)
 const exporting = ref(false)
 const exportError = ref('')
 const lastExportCount = ref(null)
@@ -36,12 +39,14 @@ const rows = computed(() => {
 })
 const meta = computed(() => data.value?.meta || {})
 const warehouseColumns = computed(() => meta.value.warehouse_columns || [])
+const showCostColumn = computed(() => detailCosts.value && meta.value.cost_visible === true)
 const cards = [
   ['healthy','健康库存'],['high','高库存'],['stagnant','呆滞库存'],['no_sales','无销量库存'],['stockout','缺货动销']
 ]
 
 function n(v,d=0){return Number(v||0).toLocaleString('zh-CN',{maximumFractionDigits:d})}
 function cover(v){return v==null?'—':`${Number(v).toFixed(1)}天`}
+function cost(v){return v==null||v===''?'—':Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:6})}
 function sortRows(rows,s){const dir=s.dir==='asc'?1:-1;return [...rows].sort((a,b)=>{const av=a[s.key],bv=b[s.key];if(av==null&&bv==null)return 0;if(av==null)return 1;if(bv==null)return -1;const an=Number(av),bn=Number(bv);return Number.isFinite(an)&&Number.isFinite(bn)?(an-bn)*dir:String(av).localeCompare(String(bv),'zh-CN')*dir})}
 function toggleSort(key,defaultDir='desc'){sort.value=sort.value.key===key?{key,dir:sort.value.dir==='asc'?'desc':'asc'}:{key,dir:defaultDir};currentPage.value=1}
 function mark(key){return sort.value.key===key?(sort.value.dir==='asc'?'↑':'↓'):''}
@@ -60,6 +65,7 @@ async function load(){
       productSearch:f.productSearch,includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,
       productCategoryIds:f.productCategoryIds,
       detailWarehouses:detailWarehouses.value,detailProductCategories:detailProductCategories.value,
+      detailCosts:detailCosts.value,
     })
     if(id===serial)data.value=r
   }catch(e){if(id===serial){error.value=`库存分析读取失败：${e.message}`;data.value=null}}
@@ -76,13 +82,14 @@ async function downloadFiltered(){
       includeName:f.includeName,excludeName:f.excludeName,productCodes:f.productCodes,productCategoryIds:f.productCategoryIds,
       detailWarehouses:detailWarehouses.value,
       detailProductCategories:detailProductCategories.value,
+      detailCosts:detailCosts.value,
     })
     lastExportCount.value=r.rowCount
   }catch(e){exportError.value=e.message}
   finally{exporting.value=false}
 }
-watch(()=>[f.dateRange,JSON.stringify(f.shops),JSON.stringify(f.warehouses),JSON.stringify(f.productCategoryIds),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),detailWarehouses.value,detailProductCategories.value],schedule)
-watch(()=>[JSON.stringify(f.shops),JSON.stringify(f.warehouses),JSON.stringify(f.productCategoryIds),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),detailWarehouses.value,detailProductCategories.value],()=>{currentPage.value=1})
+watch(()=>[f.dateRange,JSON.stringify(f.shops),JSON.stringify(f.warehouses),JSON.stringify(f.productCategoryIds),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),detailWarehouses.value,detailProductCategories.value,detailCosts.value],schedule)
+watch(()=>[JSON.stringify(f.shops),JSON.stringify(f.warehouses),JSON.stringify(f.productCategoryIds),f.productSearch,f.includeName,f.excludeName,JSON.stringify(f.productCodes),detailWarehouses.value,detailProductCategories.value,detailCosts.value],()=>{currentPage.value=1})
 watch(pageSize,()=>{currentPage.value=1})
 watch(()=>data.value?.rows?.length,()=>{currentPage.value=1})
 onMounted(async()=>{await loadOptions();await load()})
@@ -119,17 +126,17 @@ onMounted(async()=>{await loadOptions();await load()})
       </section>
 
       <section class="panel table-wrap">
-        <div class="section-head"><div><h3>全部库存商品</h3><span>当前 {{ n(data.totals?.sku_count) }} 个 SKU</span></div><div class="inventory-table-actions"><label class="inventory-detail-toggle"><input v-model="detailProductCategories" type="checkbox" />商品分类</label><label class="inventory-detail-toggle"><input v-model="detailWarehouses" type="checkbox" /><Warehouse :size="14" />细分仓库</label><button class="rank-tab" :disabled="exporting" @click="downloadFiltered"><Download :size="14" /> {{ exporting?'正在生成…':`下载当前筛选结果${lastExportCount!=null?'（'+lastExportCount+'条）':''}` }}</button></div></div>
+        <div class="section-head"><div><h3>全部库存商品</h3><span>当前 {{ n(data.totals?.sku_count) }} 个 SKU</span></div><div class="inventory-table-actions"><label v-if="auth.user?.is_system_admin" class="inventory-detail-toggle"><input v-model="detailCosts" type="checkbox" />成本价</label><label class="inventory-detail-toggle"><input v-model="detailProductCategories" type="checkbox" />商品分类</label><label class="inventory-detail-toggle"><input v-model="detailWarehouses" type="checkbox" /><Warehouse :size="14" />细分仓库</label><button class="rank-tab" :disabled="exporting" @click="downloadFiltered"><Download :size="14" /> {{ exporting?'正在生成…':`下载当前筛选结果${lastExportCount!=null?'（'+lastExportCount+'条）':''}` }}</button></div></div>
         <div v-if="exportError" class="api-error compact"><span>{{ exportError }}</span></div>
         <table class="inventory-table">
-          <thead><tr><th>商品</th><th>商家编码</th><th v-if="detailProductCategories">商品分类</th><th>分类</th><th v-for="warehouse in warehouseColumns" :key="warehouse">{{ warehouse }}</th><th><button class="sort-th" @click="toggleSort('stock_qty')">总库存 <ArrowUpDown :size="12"/>{{ mark('stock_qty') }}</button></th><th><button class="sort-th" @click="toggleSort('sales7')">7天销量 <ArrowUpDown :size="12"/>{{ mark('sales7') }}</button></th><th><button class="sort-th" @click="toggleSort('sales14')">14天销量 <ArrowUpDown :size="12"/>{{ mark('sales14') }}</button></th><th><button class="sort-th" @click="toggleSort('sales30')">30天销量 <ArrowUpDown :size="12"/>{{ mark('sales30') }}</button></th><th><button class="sort-th" @click="toggleSort('predicted_daily')">预计日销 <ArrowUpDown :size="12"/>{{ mark('predicted_daily') }}</button></th><th><button class="sort-th" @click="toggleSort('cover_days','asc')">预计周转 <ArrowUpDown :size="12"/>{{ mark('cover_days') }}</button></th><th><button class="sort-th" @click="toggleSort('weighted_aging_days')">加权库龄 <ArrowUpDown :size="12"/>{{ mark('weighted_aging_days') }}</button></th></tr></thead>
+          <thead><tr><th>商品</th><th>商家编码</th><th v-if="showCostColumn">成本价/元</th><th v-if="detailProductCategories">商品分类</th><th>分类</th><th v-for="warehouse in warehouseColumns" :key="warehouse">{{ warehouse }}</th><th><button class="sort-th" @click="toggleSort('stock_qty')">总库存 <ArrowUpDown :size="12"/>{{ mark('stock_qty') }}</button></th><th><button class="sort-th" @click="toggleSort('sales7')">7天销量 <ArrowUpDown :size="12"/>{{ mark('sales7') }}</button></th><th><button class="sort-th" @click="toggleSort('sales14')">14天销量 <ArrowUpDown :size="12"/>{{ mark('sales14') }}</button></th><th><button class="sort-th" @click="toggleSort('sales30')">30天销量 <ArrowUpDown :size="12"/>{{ mark('sales30') }}</button></th><th><button class="sort-th" @click="toggleSort('predicted_daily')">预计日销 <ArrowUpDown :size="12"/>{{ mark('predicted_daily') }}</button></th><th><button class="sort-th" @click="toggleSort('cover_days','asc')">预计周转 <ArrowUpDown :size="12"/>{{ mark('cover_days') }}</button></th><th><button class="sort-th" @click="toggleSort('weighted_aging_days')">加权库龄 <ArrowUpDown :size="12"/>{{ mark('weighted_aging_days') }}</button></th></tr></thead>
           <tbody>
             <tr v-for="r in rows" :key="r.product_id">
               <td><RouterLink class="table-product-link" :to="{path:'/product',query:{sku:r.sku}}">{{ r.name }}</RouterLink></td>
-              <td>{{ r.sku }}</td><td v-if="detailProductCategories">{{ r.product_category_names || '—' }}</td><td><span :class="['stock-category-tag',`stock-${r.category}`]">{{ r.category_label }}</span></td><td v-for="warehouse in warehouseColumns" :key="warehouse">{{ n(r.warehouse_stocks?.[warehouse]) }}</td>
+              <td>{{ r.sku }}</td><td v-if="showCostColumn" class="inventory-cost">{{ cost(r.unit_cost) }}</td><td v-if="detailProductCategories">{{ r.product_category_names || '—' }}</td><td><span :class="['stock-category-tag',`stock-${r.category}`]">{{ r.category_label }}</span></td><td v-for="warehouse in warehouseColumns" :key="warehouse">{{ n(r.warehouse_stocks?.[warehouse]) }}</td>
               <td>{{ n(r.stock_qty) }}</td><td>{{ n(r.sales7) }}</td><td>{{ n(r.sales14) }}</td><td>{{ n(r.sales30) }}</td><td>{{ n(r.predicted_daily,2) }}</td><td>{{ cover(r.cover_days) }}</td><td>{{ r.weighted_aging_days==null?'—':`${n(r.weighted_aging_days,1)}天` }}</td>
             </tr>
-            <tr v-if="!rows.length"><td :colspan="10+warehouseColumns.length+(detailProductCategories?1:0)" class="table-empty">当前筛选条件下没有库存商品。</td></tr>
+            <tr v-if="!rows.length"><td :colspan="10+warehouseColumns.length+(detailProductCategories?1:0)+(showCostColumn?1:0)" class="table-empty">当前筛选条件下没有库存商品。</td></tr>
           </tbody>
         </table>
         <div v-if="sortedRows.length" class="table-pagination">

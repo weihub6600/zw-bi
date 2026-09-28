@@ -36,6 +36,7 @@ function localDateInputValue() {
   return `${year}-${month}-${day}`
 }
 const businessDate = ref(localDateInputValue())
+const costEffectiveDate = ref(localDateInputValue())
 const selectedFile = ref(null)
 const fileInput = ref(null)
 const preview = ref(null)
@@ -69,8 +70,8 @@ const typeDefs = {
   product: {
     label: '商品资料', dateLabel: '无需业务日期',
     note: '商品资料只记录导入时间，不需要业务日期。',
-    fields: ['商家编码', '货品名称', '规格（可选）', '品牌（可选）', '分类（可选）', '条码（可选）'],
-    columns: [['merchant_code','商家编码'],['product_name','货品名称'],['spec','规格'],['brand','品牌'],['category','分类'],['barcode','条码']]
+    fields: ['商家编码', '货品名称', '规格（可选）', '品牌（可选）', '分类（可选）', '条码（可选）', '成本价（可选，仅系统管理员）', '成本币种（可选）', '成本单位（可选）'],
+    columns: [['merchant_code','商家编码'],['product_name','货品名称'],['spec','规格'],['brand','品牌'],['category','分类'],['barcode','条码'],['unit_cost','成本价'],['cost_currency','成本币种'],['cost_unit','成本单位']]
   },
   aging: {
     label: '库龄数据', dateLabel: '库龄统计日期',
@@ -81,7 +82,7 @@ const typeDefs = {
 }
 
 const templateLinks = [
-  ['product','product_master.xlsx','商品资料','商家编码、货品名称为必填；规格、品牌、分类、条码可选。'],
+  ['product','product_master.xlsx','商品资料','商家编码、货品名称为必填；其余字段可选。成本字段仅系统管理员可维护。'],
   ['sales','sales_daily.xlsx','销量数据','店铺、仓库、商家编码、商品名称、销量、均价。'],
   ['inventory','inventory_expiry.xlsx','库存效期','仓库、商家编码、商品名称、库存、生产日期、过期日期。'],
   ['aging','aging_snapshot.xlsx','库龄数据','仓库、商家编码、商品名称、库存数量、库龄天数。']
@@ -136,7 +137,7 @@ async function runPreview(){
     validateLocalForm()
     previewLoading.value=true
     preview.value = await previewImport({
-      dataType:dataType.value, departmentCode:departmentCode.value, businessDate:effectiveDate.value, file:selectedFile.value
+      dataType:dataType.value, departmentCode:departmentCode.value, businessDate:effectiveDate.value, costEffectiveDate:dataType.value==='product'?costEffectiveDate.value:'', file:selectedFile.value
     })
     if (preview.value.sales_replace_blocked) {
       errorMessage.value=preview.value.replace_block_reason || '该日期销量采用整日覆盖，纠正文件仍有错误行；为保护旧数据，本次禁止覆盖。'
@@ -172,7 +173,7 @@ async function runCommit(){
   try {
     commitLoading.value=true
     const result=await commitImport({
-      dataType:dataType.value, departmentCode:departmentCode.value, businessDate:effectiveDate.value, file:selectedFile.value
+      dataType:dataType.value, departmentCode:departmentCode.value, businessDate:effectiveDate.value, costEffectiveDate:dataType.value==='product'?costEffectiveDate.value:'', file:selectedFile.value
     })
     message.value=`导入完成：${result.batch_no}，成功 ${result.success_rows} 行，错误 ${result.error_rows} 行，警告 ${result.warning_rows} 行。`
     preview.value=null
@@ -305,6 +306,10 @@ onMounted(async()=>{
               <input v-model="businessDate" type="date" :disabled="dataType==='product'" />
               <small>{{ currentType.note }}</small>
             </label>
+            <label v-if="dataType==='product'&&auth.user?.is_system_admin">成本生效日期
+              <input v-model="costEffectiveDate" type="date" />
+              <small>暂仅支持业务当天；成本为空不变更现有版本。</small>
+            </label>
             <label>允许文件
               <input value=".xlsx / .csv" disabled />
               <small>旧版 .xls 请先另存为 .xlsx。</small>
@@ -331,6 +336,7 @@ onMounted(async()=>{
           <div class="dc-rule-list">
             <div><CheckCircle2 :size="15" />业务日期由导入界面确定，不从 Excel 猜测。</div>
             <div><CheckCircle2 :size="15" />商家编码是唯一商品键；商品资料再次导入时会按最新文件更新商品名称、规格、品牌、分类和条码。</div>
+            <div><CheckCircle2 :size="15" />成本价是可选字段，仅系统管理员可导入；缺列或空值不改变已有成本。导入成本不会覆盖同一生效日已有的不同版本。</div>
             <div><CheckCircle2 :size="15" />销量按业务日期整日覆盖：同一天可重复上传，提交后清除旧数据，以最后一次成功上传为准；其他类型仍使用 SHA256 防重复。</div>
             <div><CheckCircle2 :size="15" />30天汇总销量禁止写入逐日销量表。</div>
             <div><CheckCircle2 :size="15" />库存效期和库龄成功导入后只保留本部门最新整表快照；销量数据持续累计沉淀。</div>

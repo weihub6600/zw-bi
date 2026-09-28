@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { Users, Activity, ShieldCheck, TimerReset, UserPlus, X, Save, RefreshCw, Building2, ScrollText, Plus, Trash2, UserCog, Tags, Pencil, CheckSquare } from 'lucide-vue-next'
+import { Users, Activity, ShieldCheck, TimerReset, UserPlus, X, Save, RefreshCw, Building2, ScrollText, Plus, Trash2, UserCog, Tags, Pencil, CheckSquare, Search, CircleDollarSign } from 'lucide-vue-next'
 import { useAuthStore } from '../stores/auth'
 import {
   createAdminUser, fetchActivity, fetchAdminUser, fetchAdminUsers, fetchDepartmentExpiryRule, saveDepartmentExpiryRule, updateAdminUser,
   fetchDepartments, createDepartment, updateDepartment, deleteDepartment, fetchDepartmentMembers, saveMembership, deleteMembership, fetchAuditLogs,
-  fetchProductCategoryAdmin, createProductCategory, renameProductCategory, deleteProductCategory, assignProductCategories
+  fetchProductCategoryAdmin, createProductCategory, renameProductCategory, deleteProductCategory, assignProductCategories,
+  searchCostProducts, fetchProductCostHistory, saveProductCost
 } from '../api/admin'
 
 const auth=useAuthStore(),tab=ref('users'),loading=ref(false),error=ref('')
@@ -18,6 +19,11 @@ const audit=ref({items:[],actions:[]}),auditFilter=reactive({department_code:'',
 const canGrantAdmin=computed(()=>!!auth.user?.is_system_admin),deptName=computed(()=>auth.departmentName),auditDepartmentOptions=computed(()=>auth.memberships.filter(m=>canGrantAdmin.value||m.role==='dept_admin'))
 const canManageProductCategories=computed(()=>canGrantAdmin.value||auth.currentMembership?.role==='dept_admin')
 const categoryAdmin=ref({items:[],categories:[],total:0,page:1,page_size:25}),categorySearch=ref(''),categoryFilter=ref(''),categoryPage=ref(1),categorySelected=ref([]),categoryDrawer=ref(false),categoryForm=reactive({category_ids:[]}),categoryName=ref(''),editingCategoryId=ref(null)
+function localDateInputValue(now=new Date()){
+  const year=now.getFullYear(),month=String(now.getMonth()+1).padStart(2,'0'),day=String(now.getDate()).padStart(2,'0')
+  return `${year}-${month}-${day}`
+}
+const costSearch=ref(''),costProducts=ref([]),selectedCostProduct=ref(null),costHistory=ref([]),costForm=reactive({unit_cost:'',effective_date:localDateInputValue()}),costSaving=ref(false),costConfirm=ref(false)
 function presence(v){return {online:'在线',recent:'最近活跃',offline:'离线',inactive:'长期未活跃'}[v]||'—'}
 function roleText(v){return v==='dept_admin'?'部门管理员':'普通用户'}
 function fmt(v){return v==null?'—':v}
@@ -48,6 +54,10 @@ async function removeMembership(m){if(!confirm(`确定将 ${m.username} 从 ${me
 
 async function loadAudit(){try{audit.value=await fetchAuditLogs({departmentCode:auditFilter.department_code,userId:auditFilter.user_id,actionType:auditFilter.action_type,days:auditFilter.days,limit:300})}catch(e){error.value=e.message}}
 async function loadProductCategories(){if(!canManageProductCategories.value)return;loading.value=true;try{categoryAdmin.value=await fetchProductCategoryAdmin({search:categorySearch.value,categoryId:categoryFilter.value,page:categoryPage.value,pageSize:25});categorySelected.value=[]}catch(e){error.value=e.message}finally{loading.value=false}}
+async function searchCosts(){if(!canGrantAdmin.value)return;try{costProducts.value=(await searchCostProducts(costSearch.value)).items||[]}catch(e){error.value=e.message}}
+async function chooseCostProduct(product){selectedCostProduct.value=product;costForm.unit_cost='';costHistory.value=[];try{costHistory.value=(await fetchProductCostHistory(product.merchant_code)).items||[]}catch(e){error.value=e.message}}
+async function submitCost(){if(!selectedCostProduct.value||!costForm.unit_cost)return;costConfirm.value=true}
+async function confirmCost(){costConfirm.value=false;costSaving.value=true;error.value='';try{await saveProductCost({merchant_code:selectedCostProduct.value.merchant_code,unit_cost:costForm.unit_cost,effective_date:costForm.effective_date});costForm.unit_cost='';await chooseCostProduct(selectedCostProduct.value)}catch(e){error.value=e.message}finally{costSaving.value=false}}
 function openCategoryEditor(product){categoryForm.category_ids=(product.categories||[]).map(x=>x.id);categoryDrawer.value=product;}
 async function saveCategoryAssignment(){try{const productIds=categoryDrawer.value&&typeof categoryDrawer.value==='object'?[categoryDrawer.value.product_id]:categorySelected.value;await assignProductCategories({product_ids:productIds,category_ids:categoryForm.category_ids});categoryDrawer.value=false;await loadProductCategories()}catch(e){error.value=e.message}}
 async function saveCategoryDictionary(){try{if(editingCategoryId.value){await renameProductCategory(editingCategoryId.value,{name:categoryName.value})}else{await createProductCategory({name:categoryName.value})}categoryName.value='';editingCategoryId.value=null;await loadProductCategories()}catch(e){error.value=e.message}}
@@ -57,6 +67,7 @@ function detailText(v){if(!v)return '—';if(typeof v==='string')return v;try{re
 watch([search,role,membershipStatus],()=>{clearTimeout(window.__bjrUserSearch);window.__bjrUserSearch=setTimeout(loadUsers,250)})
 watch(()=>auth.departmentCode,async()=>{await Promise.all([loadUsers(),loadActivity(),loadRule(),loadProductCategories()])})
 watch([categorySearch,categoryFilter],()=>{categoryPage.value=1;clearTimeout(window.__bjrCategorySearch);window.__bjrCategorySearch=setTimeout(loadProductCategories,250)})
+watch(costSearch,()=>{clearTimeout(window.__bjrCostSearch);window.__bjrCostSearch=setTimeout(searchCosts,250)})
 onMounted(()=>Promise.all([loadUsers(),loadActivity(),loadRule(),loadDepartments()]))
 </script>
 
@@ -67,6 +78,7 @@ onMounted(()=>Promise.all([loadUsers(),loadActivity(),loadRule(),loadDepartments
   <div class="settings-tabs-real">
     <button :class="{active:tab==='users'}" @click="tab='users'"><Users :size="16"/>用户与权限</button>
     <button v-if="canGrantAdmin" :class="{active:tab==='departments'}" @click="tab='departments';loadDepartments()"><Building2 :size="16"/>部门管理</button>
+    <button v-if="canGrantAdmin" :class="{active:tab==='product-costs'}" @click="tab='product-costs';searchCosts()"><CircleDollarSign :size="16"/>商品成本</button>
     <button :class="{active:tab==='activity'}" @click="tab='activity';loadActivity()"><Activity :size="16"/>用户活跃</button>
     <button :class="{active:tab==='audit'}" @click="tab='audit';loadAudit()"><ScrollText :size="16"/>操作审计</button>
     <button :class="{active:tab==='rules'}" @click="tab='rules';loadRule()"><TimerReset :size="16"/>效期规则</button>
@@ -82,6 +94,37 @@ onMounted(()=>Promise.all([loadUsers(),loadActivity(),loadRule(),loadDepartments
   <template v-if="tab==='departments'&&canGrantAdmin">
     <section class="panel department-create"><div><h3>部门管理</h3><p>只有系统管理员可以新增、停用、删除部门和分配部门管理员。</p></div><input v-model="deptForm.code" placeholder="部门编码，如 B2B"/><input v-model="deptForm.name" placeholder="部门名称"/><button class="settings-primary" @click="addDepartment"><Plus :size="15"/>新增部门</button></section>
     <section class="panel settings-table-wrap"><table><thead><tr><th>部门</th><th>状态</th><th>成员</th><th>管理员</th><th>最新销量日期</th><th>未完成待办</th><th>操作</th></tr></thead><tbody><tr v-for="d in departments" :key="d.code"><td><strong>{{d.name}}</strong><small>{{d.code}}</small></td><td>{{d.status==='enabled'?'启用':'停用'}}</td><td>{{d.member_count}}</td><td>{{d.admin_count}}</td><td>{{d.latest_sales_date||'—'}}</td><td>{{d.open_task_count}}</td><td><div class="settings-row-actions"><button class="settings-mini" @click="openMembers(d)"><UserCog :size="13"/>成员</button><button class="settings-mini" @click="toggleDepartment(d)">{{d.status==='enabled'?'停用':'启用'}}</button><button class="settings-mini danger" @click="hardDeleteDepartment(d)"><Trash2 :size="13"/>删除</button></div></td></tr></tbody></table></section>
+  </template>
+
+  <template v-if="tab==='product-costs'&&canGrantAdmin">
+    <section class="panel settings-toolbar cost-search-toolbar">
+      <input v-model="costSearch" placeholder="输入商品名称或商家编码，至少 2 个字符"/>
+      <button class="settings-mini" @click="searchCosts"><Search :size="14"/>搜索</button>
+    </section>
+    <section class="panel settings-table-wrap">
+      <div class="section-head"><div><h3>选择本部门商品</h3><span>{{deptName}} · 仅展示当前部门已有业务数据或商品资料导入记录的商品</span></div></div>
+      <table><thead><tr><th>商家编码</th><th>商品名称</th><th>规格/品牌</th><th>操作</th></tr></thead><tbody>
+        <tr v-for="p in costProducts" :key="p.product_id"><td>{{p.merchant_code}}</td><td>{{p.product_name}}</td><td>{{[p.spec,p.brand].filter(Boolean).join(' · ')||'—'}}</td><td><button class="settings-mini" @click="chooseCostProduct(p)">{{selectedCostProduct?.product_id===p.product_id?'已选择':'维护成本'}}</button></td></tr>
+        <tr v-if="!costProducts.length"><td colspan="4" class="dc-empty">输入关键字查找商品</td></tr>
+      </tbody></table>
+    </section>
+    <section v-if="selectedCostProduct" class="panel settings-table-wrap cost-editor-panel">
+      <div class="section-head"><div><h3>{{selectedCostProduct.product_name}}</h3><span>{{selectedCostProduct.merchant_code}} · {{deptName}}</span></div></div>
+      <div class="settings-edit-grid">
+        <label>成本价（元）<input v-model="costForm.unit_cost" inputmode="decimal" placeholder="例如 12.50"/></label>
+        <label>生效日期（当前仅支持业务当天）<input v-model="costForm.effective_date" type="date" disabled/></label>
+      </div>
+      <p class="settings-note">按人民币元记录成本价；首次成本将作为此前全部历史日期的基础成本，后续成本从生效日当天起适用。本阶段仅系统管理员可查看和维护成本；历史补录、未来生效和同日修正暂不开放。</p>
+      <div class="settings-modal-actions"><button class="settings-primary" :disabled="costSaving||!costForm.unit_cost" @click="submitCost"><Save :size="15"/>{{costSaving?'保存中…':'新增成本版本'}}</button></div>
+      <div v-if="costConfirm" class="cost-confirm-bar"><span>确认以 <strong>{{costForm.unit_cost}} 元</strong> 保存 {{selectedCostProduct.merchant_code}}？</span><button class="settings-mini" @click="costConfirm=false">取消</button><button class="settings-primary" @click="confirmCost">确认保存</button></div>
+    </section>
+    <section v-if="selectedCostProduct" class="panel settings-table-wrap">
+      <div class="section-head"><div><h3>成本版本历史</h3><span>仅当前部门</span></div></div>
+      <table><thead><tr><th>生效日期</th><th>含税成本</th><th>币种</th><th>单位</th><th>来源</th><th>录入时间</th></tr></thead><tbody>
+        <tr v-for="(x,i) in costHistory" :key="`${x.effective_date}-${i}`"><td>{{x.effective_date}}</td><td>{{x.unit_cost}}</td><td>{{x.currency||'需补充'}}</td><td>{{x.unit||'需核对'}}</td><td>{{x.source==='manual'?'手动维护':'商品资料导入'}}</td><td>{{formatDateTime(x.created_at)}}</td></tr>
+        <tr v-if="!costHistory.length"><td colspan="6" class="dc-empty">该商品尚未维护成本</td></tr>
+      </tbody></table>
+    </section>
   </template>
 
   <template v-if="tab==='activity'">

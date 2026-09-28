@@ -19,3 +19,6 @@ export const createProductCategory=body=>apiRequest('/api/admin/product-categori
 export const renameProductCategory=(id,body)=>apiRequest(`/api/admin/product-categories/${id}`,{method:'PUT',params:{department_code:currentDepartmentCode()},body})
 export const deleteProductCategory=id=>apiRequest(`/api/admin/product-categories/${id}`,{method:'DELETE',params:{department_code:currentDepartmentCode()}})
 export const assignProductCategories=body=>apiRequest('/api/admin/product-categories/assign',{method:'PUT',params:{department_code:currentDepartmentCode()},body})
+export const searchCostProducts=q=>apiRequest('/api/admin/product-costs/products/search',{params:{department_code:currentDepartmentCode(),q}})
+export const fetchProductCostHistory=merchantCode=>apiRequest(`/api/admin/product-costs/${encodeURIComponent(merchantCode)}`,{params:{department_code:currentDepartmentCode()}})
+export const saveProductCost=body=>apiRequest('/api/admin/product-costs',{method:'POST',params:{department_code:currentDepartmentCode()},body})

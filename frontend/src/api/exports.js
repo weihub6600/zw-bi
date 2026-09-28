@@ -74,7 +74,7 @@ export function exportAging(departmentCode) {
   return downloadFile({ path: '/api/exports/aging', params: { department_code: departmentCode } })
 }
 
-export function exportInventoryAnalysis({ departmentCode, shops, warehouses, days, productSearch, includeName, excludeName, productCodes, productCategoryIds, category, detailWarehouses, detailProductCategories }) {
+export function exportInventoryAnalysis({ departmentCode, shops, warehouses, days, productSearch, includeName, excludeName, productCodes, productCategoryIds, category, detailWarehouses, detailProductCategories, detailCosts }) {
   return downloadFile({
     path: '/api/exports/inventory-analysis',
     params: {
@@ -90,6 +90,7 @@ export function exportInventoryAnalysis({ departmentCode, shops, warehouses, day
       category: category || '',
       detail_warehouses: detailWarehouses || undefined,
       detail_product_categories: detailProductCategories || undefined,
+      detail_costs: detailCosts || undefined,
     },
   })
 }

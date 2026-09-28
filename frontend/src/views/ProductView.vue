@@ -31,6 +31,7 @@ const stockCategory=computed(()=>String(route.query.stock_category||'').trim())
 const expiryStatus=computed(()=>String(route.query.expiry_status||'').trim())
 const listMode=computed(()=>!sku.value && (!!stockCategory.value || !!expiryStatus.value))
 const priceVisible=computed(()=>data.value?.meta?.price_visible===true)
+const costReference=computed(()=>data.value?.cost_reference||null)
 const stockLabels={healthy:'健康库存',high:'高库存',stagnant:'呆滞库存',no_sales:'无销量库存',stockout:'缺货动销'}
 const sortedShopSales=computed(()=>sortRows(data.value?.shop_sales_options||data.value?.shop_sales||[],shopSort.value))
 const showYesterdaySales=computed(()=>data.value?.meta?.yesterday_sales_available===true)
@@ -44,7 +45,7 @@ const warehouseContext=computed(()=>!f.warehouses.length?'全部仓库':f.wareho
 const sourceContext=computed(()=>stockCategory.value?`库存分类：${stockLabels[stockCategory.value]||stockCategory.value}`:expiryStatus.value?`效期状态：${expiryStatus.value}`:'')
 
 function n(v,d=0){return Number(v||0).toLocaleString('zh-CN',{maximumFractionDigits:d})}
-function money(v){return Number(v||0).toLocaleString('zh-CN',{style:'currency',currency:'CNY',maximumFractionDigits:2})}
+function money(v){return v==null||v===''?'—':Number(v).toLocaleString('zh-CN',{style:'currency',currency:'CNY',maximumFractionDigits:2})}
 function statusClass(s){return {'正常':'expiry-normal','预警':'expiry-warn','临期':'expiry-near','过期':'expiry-expired'}[s]||''}
 function cover(v){return v==null?'—':`${Number(v).toFixed(1)}天`}
 function taskStatus(s){return ({running:'进行中',pending_delete:'删除待审批',done:'已完成',delete_rejected:'删除被驳回'})[s]||s}
@@ -286,8 +287,11 @@ onBeforeUnmount(()=>{clearTimeout(searchTimer);window.removeEventListener('resiz
       <section class="product-kpis-real product-kpis-v154">
         <article><span>7天销量</span><b>{{ n(data.sales.sales7) }}</b></article><article><span>14天销量</span><b>{{ n(data.sales.sales14) }}</b></article><article><span>30天销量</span><b>{{ n(data.sales.sales30) }}</b></article>
         <article v-if="priceVisible"><span>7天均价</span><b>{{ money(data.sales.avg_price7) }}</b></article><article v-if="priceVisible"><span>14天均价</span><b>{{ money(data.sales.avg_price14) }}</b></article><article v-if="priceVisible"><span>30天均价</span><b>{{ money(data.sales.avg_price30) }}</b></article>
+        <article v-if="costReference" class="cost-kpi"><span>成本价</span><b>{{ costReference.unit_cost==null?'—':Number(costReference.unit_cost).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:6}) }}<em v-if="costReference.unit_cost!=null">元</em></b><small>{{ costReference.cost_effective_date ? `生效日 ${costReference.cost_effective_date}` : '生效日 未维护' }}</small></article>
         <article><span>当前库存</span><b>{{ n(data.inventory.stock_qty) }}</b></article><article><span>预计日销</span><b>{{ n(data.inventory.predicted_daily,2) }}</b></article><article><span>预计可售</span><b>{{ cover(data.inventory.cover_days) }}</b></article><article><span>最低剩余效期</span><b>{{ data.product.lowest_remaining_pct==null?'—':`${n(data.product.lowest_remaining_pct,1)}%` }}</b></article>
       </section>
+
+      <div v-if="costReference?.cost_changed_in_period" class="data-scope-bar cost-change-note"><span>所选期间成本发生变化，当前显示区间末日适用成本价（{{ costReference.as_of_date }}）。</span></div>
 
       <section class="data-scope-bar"><span>{{ priceVisible?'单店铺：趋势显示销量 + 加权均价':'全部/多店铺：趋势只显示销量' }}</span><span>{{ data.meta.inventory_dimension_note }}</span></section>
 

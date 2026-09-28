@@ -1,5 +1,5 @@
 import { apiRequest, currentDepartmentCode } from './http'
-function makeImportForm({dataType,departmentCode='',businessDate,file}){const form=new FormData();form.set('data_type',dataType);form.set('department_code',currentDepartmentCode(departmentCode));if(businessDate)form.set('business_date',businessDate);form.set('file',file);return form}
+function makeImportForm({dataType,departmentCode='',businessDate,costEffectiveDate,file}){const form=new FormData();form.set('data_type',dataType);form.set('department_code',currentDepartmentCode(departmentCode));if(businessDate)form.set('business_date',businessDate);if(costEffectiveDate)form.set('cost_effective_date',costEffectiveDate);form.set('file',file);return form}
 export const previewImport=payload=>apiRequest('/api/imports/preview',{method:'POST',form:makeImportForm(payload)})
 export const commitImport=payload=>apiRequest('/api/imports/commit',{method:'POST',form:makeImportForm(payload)})
 export const fetchRecentImports=({departmentCode='',limit=80}={})=>apiRequest('/api/imports/recent',{params:{department_code:currentDepartmentCode(departmentCode),limit}})
